@@ -40,6 +40,7 @@ pub mod recall;
 pub mod runtime;
 pub mod scheduler;
 pub mod smoke;
+pub mod sources;
 pub mod state;
 pub mod tray;
 

@@ -153,6 +153,44 @@ fn execute_integrity_repair(
     complete(state, operation_id, &serde_json::to_value(result)?)
 }
 
+pub fn start_source_sync(state: &AppState, source_id: &str) -> BiResult<Operation> {
+    let source = crate::sources::get_source(state, source_id)?;
+    if !source.enabled {
+        return Err(BiError::Invalid(format!("source {source_id} is disabled")));
+    }
+    let checkpoint = serde_json::json!({"source_id": source_id});
+    let operation = create(
+        state,
+        "source_sync",
+        Some(&source.project_id),
+        Some(&checkpoint),
+    )?;
+    let state = Arc::new(state.clone());
+    let id = operation.id.clone();
+    let source_id = source_id.to_string();
+    std::thread::Builder::new()
+        .name(format!("biturbo-operation-{id}"))
+        .spawn(move || {
+            if let Err(error) = execute_source_sync(&state, &id, &source_id) {
+                let _ = crate::sources::mark_source_error(&state, &source_id, &error.to_string());
+                if error.to_string().contains("cancelled") {
+                    let _ = mark_cancelled(&state, &id);
+                } else {
+                    let _ = fail(&state, &id, &error.to_string());
+                }
+            }
+        })
+        .map_err(|error| BiError::Internal(format!("spawn source sync: {error}")))?;
+    Ok(operation)
+}
+
+fn execute_source_sync(state: &AppState, operation_id: &str, source_id: &str) -> BiResult<()> {
+    mark_running(state, operation_id)?;
+    update_progress(state, operation_id, "discovering_transcripts", 0, 1, None)?;
+    let result = crate::sources::sync_source(state, source_id, Some(operation_id))?;
+    complete(state, operation_id, &serde_json::to_value(result)?)
+}
+
 pub fn get(state: &AppState, id: &str) -> BiResult<Operation> {
     let conn = state.db.conn()?;
     conn.query_row(
