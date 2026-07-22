@@ -167,6 +167,10 @@ fn run_migrations(conn: &mut rusqlite::Connection) -> BiResult<()> {
     }
     tx.execute_batch(RELIABILITY_SCHEMA)?;
     tx.execute_batch(AUTONOMOUS_RUNTIME_SCHEMA)?;
+    #[cfg(test)]
+    if FAIL_NEXT_MIGRATION.with(|flag| flag.replace(false)) {
+        return Err(crate::error::BiError::Db("forced migration failure".into()));
+    }
     tx.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -825,7 +829,7 @@ mod migration_tests {
             entry.ok().is_some_and(|e| {
                 e.file_name()
                     .to_string_lossy()
-                    .starts_with("biturbo-pre-v1-")
+                    .starts_with(&format!("biturbo-pre-v{CURRENT_SCHEMA_VERSION}-"))
             })
         }));
         assert!(std::fs::read_dir(&backups).unwrap().flatten().any(|entry| {
@@ -864,4 +868,72 @@ mod migration_tests {
         assert_eq!(version, 0);
         assert_eq!(projects, 0);
     }
+
+    #[test]
+    fn v02_database_upgrades_without_rebuilding_existing_data() {
+        let db_path = temp_db();
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(RELIABILITY_SCHEMA).unwrap();
+            conn.execute(
+                "INSERT INTO projects(id,name,created_at,updated_at) VALUES('p','project',1,1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO memories(uid,project_id,mem_type,content,created_at,updated_at,last_access)
+                 VALUES('keep','p','fact','keep this memory',1,1,1)",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let db = Db::open(&db_path).unwrap();
+        let conn = db.conn().unwrap();
+        let content: String = conn
+            .query_row("SELECT content FROM memories WHERE uid='keep'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(content, "keep this memory");
+        let v3_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_candidates'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(v3_tables, 1);
+    }
+
+    #[test]
+    fn forced_v03_migration_failure_restores_original_database() {
+        let db_path = temp_db();
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE legacy_marker(value TEXT NOT NULL);
+                 INSERT INTO legacy_marker(value) VALUES('survives');
+                 PRAGMA user_version=1;",
+            )
+            .unwrap();
+        }
+        FAIL_NEXT_MIGRATION.with(|flag| flag.set(true));
+        assert!(Db::open(&db_path).is_err());
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let marker: String = conn
+            .query_row("SELECT value FROM legacy_marker", [], |row| row.get(0))
+            .unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(marker, "survives");
+        assert_eq!(version, 1);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_MIGRATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

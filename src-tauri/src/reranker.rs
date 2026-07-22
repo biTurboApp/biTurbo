@@ -182,6 +182,10 @@ fn download(state: &AppState, operation_id: &str) -> BiResult<()> {
     crate::operations::complete(state, operation_id, &serde_json::to_value(status(state)?)?)
 }
 
+pub fn resume_download(state: &AppState, operation_id: &str) -> BiResult<()> {
+    download(state, operation_id)
+}
+
 pub fn import_artifact(state: &AppState, source: &std::path::Path) -> BiResult<RerankerStatus> {
     verify_artifact(source)?;
     let destination = artifact_dir(state);
@@ -259,7 +263,7 @@ fn load_model(state: &AppState) -> BiResult<Arc<TextRerank>> {
         tokenizer_config_file: std::fs::read(dir.join("tokenizer_config.json"))?,
     };
     let model = UserDefinedRerankingModel::new(dir.join("onnx/model.onnx"), tokenizer_files);
-    let providers = reranker_providers();
+    let providers = reranker_providers()?;
     let mut options = RerankInitOptionsUserDefined::default();
     options.execution_providers = providers;
     options.max_length = 512;
@@ -270,18 +274,23 @@ fn load_model(state: &AppState) -> BiResult<Arc<TextRerank>> {
     Ok(reranker)
 }
 
-fn reranker_providers() -> Vec<ExecutionProviderDispatch> {
+fn reranker_providers() -> BiResult<Vec<ExecutionProviderDispatch>> {
+    let requested = crate::accelerator::validate_requested_provider()?;
     #[cfg(feature = "cuda")]
     {
-        let requested = crate::accelerator::requested_provider();
         if requested != "cpu" && crate::accelerator::cuda_available() {
-            return vec![
+            return Ok(vec![
                 CUDAExecutionProvider::default().build(),
                 CPUExecutionProvider::default().build(),
-            ];
+            ]);
         }
     }
-    vec![CPUExecutionProvider::default().build()]
+    if requested == "cuda" {
+        return Err(BiError::Embed(
+            "CUDA was required for reranking but is not available".into(),
+        ));
+    }
+    Ok(vec![CPUExecutionProvider::default().build()])
 }
 
 fn artifact_dir(state: &AppState) -> std::path::PathBuf {

@@ -127,6 +127,7 @@ pub fn sync_source(
                         .unwrap_or_else(|| "unknown".into()),
                     content,
                     metadata: Some(serde_json::json!({
+                        "source_id": source.id,
                         "source_pointer": format!("{}:{}", path.display(), line_index + 1)
                     })),
                 },

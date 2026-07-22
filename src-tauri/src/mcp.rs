@@ -314,15 +314,14 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "accelerator_status" => text(&serde_json::to_string_pretty(&crate::accelerator::status(
             state,
         )?)?),
-        "get_accelerator_preference" => text(&serde_json::to_string_pretty(&json!({
-            "provider": crate::accelerator::persisted_preference(),
-            "environment_override": std::env::var("BITURBO_EMBED_EP").ok()
-        }))?),
+        "get_accelerator_preference" => text(&serde_json::to_string_pretty(
+            &crate::accelerator::preference(),
+        )?),
         "set_accelerator_preference" => {
             let provider = arg_str(&args, "provider")?;
-            text(&serde_json::to_string_pretty(&json!({
-                "provider": crate::accelerator::set_preference(state, &provider)?
-            }))?)
+            text(&serde_json::to_string_pretty(
+                &crate::accelerator::set_preference(state, &provider)?,
+            )?)
         }
         "reranker_status" => text(&serde_json::to_string_pretty(&crate::reranker::status(
             state,

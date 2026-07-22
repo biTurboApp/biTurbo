@@ -32,6 +32,12 @@ pub struct AcceleratorStatus {
     pub average_batch_ms: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceleratorPreference {
+    pub provider: String,
+    pub environment_override: Option<String>,
+}
+
 pub fn load_preference(db: &crate::db::Db) -> BiResult<()> {
     let conn = db.conn()?;
     let value: Option<String> = conn
@@ -59,7 +65,14 @@ pub fn persisted_preference() -> String {
     PERSISTED_PREFERENCE.read().clone()
 }
 
-pub fn set_preference(state: &AppState, provider: &str) -> BiResult<String> {
+pub fn preference() -> AcceleratorPreference {
+    AcceleratorPreference {
+        provider: persisted_preference(),
+        environment_override: std::env::var("BITURBO_EMBED_EP").ok(),
+    }
+}
+
+pub fn set_preference(state: &AppState, provider: &str) -> BiResult<AcceleratorPreference> {
     let provider = provider.to_ascii_lowercase();
     validate_provider(&provider)?;
     let now = chrono::Utc::now().timestamp_millis();
@@ -74,8 +87,8 @@ pub fn set_preference(state: &AppState, provider: &str) -> BiResult<String> {
         Ok(())
     })?;
     *PERSISTED_PREFERENCE.write() = provider.clone();
-    state.release_idle_embedders();
-    Ok(provider)
+    state.reset_embedders();
+    Ok(preference())
 }
 
 pub fn status(state: &AppState) -> BiResult<AcceleratorStatus> {

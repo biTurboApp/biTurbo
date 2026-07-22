@@ -300,9 +300,6 @@ mod cuda_tests {
         let embedder = Embedder::new(DEFAULT_MODEL).unwrap();
         let vector = embedder.embed("biTurbo CUDA runtime smoke test").unwrap();
         assert_eq!(vector.len(), DEFAULT_DIM);
-        assert_eq!(
-            crate::accelerator::requested_provider(),
-            "cuda".to_string()
-        );
+        assert_eq!(crate::accelerator::requested_provider(), "cuda".to_string());
     }
 }

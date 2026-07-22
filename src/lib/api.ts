@@ -163,9 +163,9 @@ export const api = {
     invoke<MaintenancePolicy>("update_maintenance_policy", { policy }),
 
   acceleratorStatus: () => invoke<AcceleratorStatus>("accelerator_status"),
-  getAcceleratorPreference: () => invoke<string>("get_accelerator_preference"),
+  getAcceleratorPreference: () => invoke<{ provider: string; environment_override?: string }>("get_accelerator_preference"),
   setAcceleratorPreference: (provider: "auto" | "cpu" | "cuda") =>
-    invoke<string>("set_accelerator_preference", { provider }),
+    invoke<{ provider: string; environment_override?: string }>("set_accelerator_preference", { provider }),
   rerankerStatus: () => invoke<RerankerStatus>("reranker_status"),
   startRerankerDownload: () => invoke<Operation>("start_reranker_download"),
   setRerankerEnabled: (enabled: boolean) =>

@@ -411,4 +411,11 @@ impl AppState {
             embedder.release_if_idle();
         }
     }
+
+    pub fn reset_embedders(&self) {
+        self.embedder.force_release();
+        for (_, embedder) in self.project_embedders.read().values() {
+            embedder.force_release();
+        }
+    }
 }

@@ -844,15 +844,15 @@ pub fn accelerator_status(
 }
 
 #[tauri::command]
-pub fn get_accelerator_preference() -> String {
-    crate::accelerator::persisted_preference()
+pub fn get_accelerator_preference() -> crate::accelerator::AcceleratorPreference {
+    crate::accelerator::preference()
 }
 
 #[tauri::command]
 pub fn set_accelerator_preference(
     state: State<'_, AppState>,
     provider: String,
-) -> BiResult<String> {
+) -> BiResult<crate::accelerator::AcceleratorPreference> {
     crate::accelerator::set_preference(state.inner(), &provider)
 }
 

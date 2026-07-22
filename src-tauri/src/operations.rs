@@ -158,7 +158,29 @@ pub fn start_source_sync(state: &AppState, source_id: &str) -> BiResult<Operatio
     if !source.enabled {
         return Err(BiError::Invalid(format!("source {source_id} is disabled")));
     }
-    let checkpoint = serde_json::json!({"source_id": source_id});
+    let existing: Vec<Operation> = list(state, 500)?
+        .into_iter()
+        .filter(|operation| {
+            operation.kind == "source_sync"
+                && matches!(operation.status.as_str(), "queued" | "running")
+                && operation
+                    .checkpoint
+                    .as_ref()
+                    .and_then(|value| value.get("source_id"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(source_id)
+        })
+        .collect();
+    if let Some(queued) = existing
+        .iter()
+        .find(|operation| operation.status == "queued")
+    {
+        return Ok(queued.clone());
+    }
+    let checkpoint = serde_json::json!({
+        "source_id": source_id,
+        "coalesced_rerun": existing.iter().any(|operation| operation.status == "running")
+    });
     let operation = create(
         state,
         "source_sync",
@@ -185,10 +207,25 @@ pub fn start_source_sync(state: &AppState, source_id: &str) -> BiResult<Operatio
 }
 
 fn execute_source_sync(state: &AppState, operation_id: &str, source_id: &str) -> BiResult<()> {
+    let source = crate::sources::get_source(state, source_id)?;
+    let task_class = format!("source_sync:{source_id}");
+    let lease = loop {
+        match crate::runtime::claim_lease(state, Some(&source.project_id), &task_class, 300) {
+            Ok(lease) => break lease,
+            Err(_) => {
+                if is_cancel_requested(state, operation_id)? {
+                    return mark_cancelled(state, operation_id);
+                }
+                update_progress(state, operation_id, "queued_rerun", 0, 1, None)?;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    };
     mark_running(state, operation_id)?;
     update_progress(state, operation_id, "discovering_transcripts", 0, 1, None)?;
-    let result = crate::sources::sync_source(state, source_id, Some(operation_id))?;
-    complete(state, operation_id, &serde_json::to_value(result)?)
+    let result = crate::sources::sync_source(state, source_id, Some(operation_id));
+    let _ = crate::runtime::release_lease(state, &lease.lease_key);
+    complete(state, operation_id, &serde_json::to_value(result?)?)
 }
 
 pub fn get(state: &AppState, id: &str) -> BiResult<Operation> {
@@ -525,6 +562,25 @@ pub fn retry(state: &AppState, id: &str) -> BiResult<Operation> {
                 .and_then(|value| value.as_str());
             start_model_rebuild(state, &project_id, model)
         }
+        "source_sync" => {
+            let source_id = operation
+                .checkpoint
+                .as_ref()
+                .and_then(|value| value.get("source_id"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| BiError::Invalid("source sync retry has no source_id".into()))?;
+            start_source_sync(state, source_id)
+        }
+        "integrity_check" => start_integrity_check(state, operation.project_id.as_deref()),
+        "integrity_repair" => {
+            let request: crate::integrity::RepairRequest = serde_json::from_value(
+                operation
+                    .checkpoint
+                    .ok_or_else(|| BiError::Invalid("repair retry has no request".into()))?,
+            )?;
+            start_integrity_repair(state, request)
+        }
+        "reranker_download" => crate::reranker::start_download(state),
         kind => Err(BiError::Invalid(format!(
             "operation kind {kind} is not retryable"
         ))),
@@ -627,6 +683,73 @@ pub fn resume_pending(state: Arc<AppState>) -> BiResult<usize> {
                     })
                     .ok();
                 resumed += 1;
+            }
+            "source_sync" => {
+                let Some(source_id) = operation
+                    .checkpoint
+                    .as_ref()
+                    .and_then(|value| value.get("source_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(String::from)
+                else {
+                    fail(&state, &operation.id, "queued source sync has no source_id")?;
+                    continue;
+                };
+                let id = operation.id;
+                let state = state.clone();
+                std::thread::Builder::new()
+                    .name(format!("biturbo-operation-{id}"))
+                    .spawn(move || {
+                        let _ = execute_source_sync(&state, &id, &source_id);
+                    })
+                    .ok();
+                resumed += 1;
+            }
+            "integrity_check" => {
+                let id = operation.id;
+                let project_id = operation.project_id;
+                let state = state.clone();
+                std::thread::Builder::new()
+                    .name(format!("biturbo-operation-{id}"))
+                    .spawn(move || {
+                        let _ = execute_integrity_check(&state, &id, project_id.as_deref());
+                    })
+                    .ok();
+                resumed += 1;
+            }
+            "integrity_repair" => {
+                let Some(checkpoint) = operation.checkpoint else {
+                    fail(&state, &operation.id, "queued repair has no request")?;
+                    continue;
+                };
+                let request: crate::integrity::RepairRequest = serde_json::from_value(checkpoint)?;
+                let id = operation.id;
+                let state = state.clone();
+                std::thread::Builder::new()
+                    .name(format!("biturbo-operation-{id}"))
+                    .spawn(move || {
+                        let _ = execute_integrity_repair(&state, &id, request);
+                    })
+                    .ok();
+                resumed += 1;
+            }
+            "reranker_download" => {
+                let id = operation.id;
+                let state = state.clone();
+                std::thread::Builder::new()
+                    .name(format!("biturbo-operation-{id}"))
+                    .spawn(move || {
+                        let _ = crate::reranker::resume_download(&state, &id);
+                    })
+                    .ok();
+                resumed += 1;
+            }
+            "scheduled_maintenance" => {
+                fail(
+                    &state,
+                    &operation.id,
+                    "scheduled maintenance will restart idempotently when next due",
+                )?;
             }
             unsupported => {
                 fail(

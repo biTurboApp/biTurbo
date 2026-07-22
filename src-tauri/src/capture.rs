@@ -116,6 +116,7 @@ struct ExtractedCandidate {
     mem_type: String,
     tags: Vec<String>,
     confidence: f32,
+    extraction_method: String,
 }
 
 pub fn submit_observation(
@@ -204,18 +205,25 @@ pub fn submit_observation(
         .and_then(|value| value.get("source_pointer"))
         .and_then(serde_json::Value::as_str)
         .map(String::from);
+    let source_id = input
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("source_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
     let evidence_excerpt = bounded_chars(&redacted, policy.evidence_max_chars);
     let evidence_hash = hash_text(&evidence_excerpt);
     let mut candidate_ids = Vec::with_capacity(extracted.len());
 
     state.db.write(|tx| {
         tx.execute(
-            "INSERT INTO observations(id, project_id, source_kind, external_id, session_id,
+            "INSERT INTO observations(id, project_id, source_id, source_kind, external_id, session_id,
                  occurred_at, role, content_hash, status, candidate_count, created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'processed',?9,?10)",
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'processed',?10,?11)",
             rusqlite::params![
                 observation_id,
                 input.project_id,
+                source_id,
                 input.source_kind,
                 input.external_id,
                 input.session_id,
@@ -267,13 +275,14 @@ pub fn submit_observation(
             tx.execute(
                 "INSERT INTO candidate_evidence(candidate_id, excerpt, source_pointer,
                      source_timestamp, evidence_hash, extraction_method)
-                 VALUES(?1,?2,?3,?4,?5,'deterministic-v1')",
+                 VALUES(?1,?2,?3,?4,?5,?6)",
                 rusqlite::params![
                     candidate_id,
                     evidence_excerpt,
                     source_pointer,
                     occurred_at,
                     evidence_hash,
+                    extracted.extraction_method,
                 ],
             )?;
             candidate_ids.push(candidate_id);
@@ -296,6 +305,32 @@ pub fn submit_observation(
         )?;
         Ok(())
     })?;
+
+    if secret_count == 0 && policy.approval_mode == "trusted_categories" {
+        for candidate_id in &candidate_ids {
+            let candidate = get_candidate(state, candidate_id)?;
+            let safe_category = policy
+                .auto_approve_categories
+                .iter()
+                .any(|category| category == &candidate.mem_type);
+            if safe_category
+                && candidate.contradiction_uid.is_none()
+                && candidate.duplicate_memory_uid.is_none()
+            {
+                review_candidate(
+                    state,
+                    CandidateDecisionInput {
+                        candidate_id: candidate.id,
+                        action: "approve".into(),
+                        edited_content: None,
+                        target_memory_uid: None,
+                        expected_version: candidate.version,
+                        decided_by: Some("automatic".into()),
+                    },
+                )?;
+            }
+        }
+    }
 
     Ok(SubmitObservationResult {
         accepted: true,
@@ -798,11 +833,48 @@ fn extract_deterministic(
         return Vec::new();
     }
     vec![ExtractedCandidate {
-        content: bounded_chars(&normalized, 2_000),
+        content: bounded_chars(&durable_sentence(&normalized), 600),
         mem_type: mem_type.into(),
         tags: vec![tag.into(), "automatic-capture".into()],
         confidence,
+        extraction_method: "deterministic-v1".into(),
     }]
+}
+
+fn durable_sentence(value: &str) -> String {
+    const CUES: &[&str] = &[
+        "i prefer",
+        "please always",
+        "do not",
+        "don't",
+        "we decided",
+        "decision:",
+        "we will use",
+        "remember that",
+        "the project uses",
+        "is required",
+        "must be",
+        "the pattern is",
+        "workflow",
+        "procedure",
+        "ich bevorzuge",
+        "beschlossen",
+        "entscheidung:",
+        "merke",
+        "muss ",
+        "vorgehen",
+        "ablauf",
+    ];
+    value
+        .split(|character| matches!(character, '.' | '!' | '?' | '\n'))
+        .map(str::trim)
+        .find(|sentence| {
+            let lower = sentence.to_lowercase();
+            CUES.iter().any(|cue| lower.contains(cue))
+        })
+        .filter(|sentence| !sentence.is_empty())
+        .unwrap_or(value)
+        .to_string()
 }
 
 fn extract_with_ollama(
@@ -896,6 +968,7 @@ fn extract_with_ollama(
             mem_type: mem_type.into(),
             tags,
             confidence: confidence.clamp(0.0, 1.0),
+            extraction_method: "ollama-v1".into(),
         });
     }
     Ok(extracted)
@@ -1199,5 +1272,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(replay.memory_uid, decision.memory_uid);
+    }
+
+    #[test]
+    fn transcript_tail_is_absent_from_database_and_wal() {
+        let state = state();
+        let unique_tail = format!("RAW-TRANSCRIPT-TAIL-{}", uuid::Uuid::new_v4());
+        let content = format!(
+            "We decided to keep SQLite authoritative. {} {unique_tail}",
+            "transient conversation filler ".repeat(80)
+        );
+        submit_observation(
+            &state,
+            SubmitObservationInput {
+                project_id: "default".into(),
+                source_kind: "generic".into(),
+                external_id: "privacy-tail".into(),
+                session_id: None,
+                occurred_at: 1,
+                role: "user".into(),
+                content,
+                metadata: None,
+            },
+        )
+        .unwrap();
+        for path in [
+            state.data_dir.join("biturbo.db"),
+            state.data_dir.join("biturbo.db-wal"),
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                assert!(
+                    !bytes
+                        .windows(unique_tail.len())
+                        .any(|window| window == unique_tail.as_bytes()),
+                    "raw transcript tail leaked into SQLite storage"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trusted_category_auto_approval_is_explicit_and_safe() {
+        let state = state();
+        let mut policy = get_capture_policy(&state, "default").unwrap();
+        policy.approval_mode = "trusted_categories".into();
+        policy.auto_approve_categories = vec!["decision".into()];
+        update_capture_policy(&state, policy).unwrap();
+
+        let result = submit_observation(
+            &state,
+            SubmitObservationInput {
+                project_id: "default".into(),
+                source_kind: "generic".into(),
+                external_id: "trusted-decision".into(),
+                session_id: None,
+                occurred_at: 1,
+                role: "user".into(),
+                content: "We decided to use transactional migrations.".into(),
+                metadata: None,
+            },
+        )
+        .unwrap();
+        let candidate = get_candidate(&state, &result.candidate_ids[0]).unwrap();
+        assert_eq!(candidate.status, "approved");
+        assert!(candidate.resulting_memory_uid.is_some());
+
+        let secret = submit_observation(
+            &state,
+            SubmitObservationInput {
+                project_id: "default".into(),
+                source_kind: "generic".into(),
+                external_id: "trusted-secret".into(),
+                session_id: None,
+                occurred_at: 2,
+                role: "user".into(),
+                content: "We decided the api_key=sk-never-approve is required.".into(),
+                metadata: None,
+            },
+        )
+        .unwrap();
+        if let Some(candidate_id) = secret.candidate_ids.first() {
+            assert_eq!(
+                get_candidate(&state, candidate_id).unwrap().status,
+                "pending"
+            );
+        }
     }
 }

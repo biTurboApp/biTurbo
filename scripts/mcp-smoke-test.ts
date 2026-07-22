@@ -209,6 +209,10 @@ const RECALL_HOLDER: { recallId: string | null; memoryUid: string | null } = {
   memoryUid: null,
 };
 const OPERATION_HOLDER: { id: string | null } = { id: null };
+const CANDIDATE_HOLDER: { id: string | null; version: number } = { id: null, version: 1 };
+const SOURCE_HOLDER: { id: string | null } = { id: null };
+const CAPTURE_POLICY_HOLDER: { value: Record<string, unknown> | null } = { value: null };
+const INTEGRITY_HOLDER: { operationId: string | null; reportId: string | null } = { operationId: null, reportId: null };
 const EMPTY_INGEST_ROOT = mkdtempSync(resolve(tmpdir(), "biturbo-mcp-smoke-"));
 
 const tests: TestCase[] = [
@@ -349,6 +353,200 @@ const tests: TestCase[] = [
       const j = extractJson(r) as { recorded?: boolean } | null;
       return j?.recorded === true || "feedback was not recorded";
     },
+  },
+  {
+    name: "submit_observation",
+    tool: "submit_observation",
+    args: {
+      project_id: TEST_PROJECT,
+      source_kind: "generic",
+      external_id: `smoke-observation-${Date.now()}`,
+      occurred_at: Date.now(),
+      role: "user",
+      content: "We decided to keep the smoke-test memory runtime completely local.",
+    },
+    expect: (r) => {
+      const j = extractJson(r) as { accepted?: boolean; candidate_ids?: string[] } | null;
+      const id = j?.candidate_ids?.[0];
+      if (!j?.accepted || !id) return "observation did not create a candidate";
+      CANDIDATE_HOLDER.id = id;
+      return true;
+    },
+  },
+  {
+    name: "list_memory_candidates",
+    tool: "list_memory_candidates",
+    args: { project_id: TEST_PROJECT, status: "pending" },
+    expect: (r) => Array.isArray(extractJson(r)) || "candidate list is not an array",
+  },
+  {
+    name: "get_memory_candidate",
+    tool: "get_memory_candidate",
+    args: () => ({ candidate_id: CANDIDATE_HOLDER.id ?? "" }),
+    skip: () => !CANDIDATE_HOLDER.id,
+    expect: (r) => {
+      const j = extractJson(r) as { id?: string; version?: number } | null;
+      if (j?.version) CANDIDATE_HOLDER.version = j.version;
+      return j?.id === CANDIDATE_HOLDER.id || "wrong candidate returned";
+    },
+  },
+  {
+    name: "review_memory_candidate",
+    tool: "review_memory_candidate",
+    args: () => ({
+      candidate_id: CANDIDATE_HOLDER.id ?? "",
+      action: "approve",
+      expected_version: CANDIDATE_HOLDER.version,
+      decided_by: "mcp-smoke",
+    }),
+    skip: () => !CANDIDATE_HOLDER.id,
+    expect: (r) => {
+      const j = extractJson(r) as { memory_uid?: string } | null;
+      return isNonEmptyString(j?.memory_uid) || "candidate was not activated";
+    },
+  },
+  {
+    name: "get_capture_policy",
+    tool: "get_capture_policy",
+    args: { project_id: TEST_PROJECT },
+    expect: (r) => {
+      const j = extractJson(r);
+      if (!j || typeof j !== "object") return "capture policy missing";
+      CAPTURE_POLICY_HOLDER.value = j as Record<string, unknown>;
+      return true;
+    },
+  },
+  {
+    name: "update_capture_policy",
+    tool: "update_capture_policy",
+    args: () => CAPTURE_POLICY_HOLDER.value ?? {},
+    skip: () => !CAPTURE_POLICY_HOLDER.value,
+    expect: (r) => (extractJson(r) as { project_id?: string } | null)?.project_id === TEST_PROJECT || "policy update failed",
+  },
+  {
+    name: "configure_observation_source",
+    tool: "configure_observation_source",
+    args: {
+      id: "",
+      project_id: TEST_PROJECT,
+      kind: "generic",
+      name: "smoke generic source",
+      root_path: null,
+      enabled: true,
+      config: {},
+      last_sync_at: null,
+      last_error: null,
+      processed_count: 0,
+      candidate_count: 0,
+      created_at: 0,
+      updated_at: 0,
+    },
+    expect: (r) => {
+      const j = extractJson(r) as { id?: string } | null;
+      if (!j?.id) return "source id missing";
+      SOURCE_HOLDER.id = j.id;
+      return true;
+    },
+  },
+  {
+    name: "list_observation_sources",
+    tool: "list_observation_sources",
+    args: { project_id: TEST_PROJECT },
+    expect: (r) => Array.isArray(extractJson(r)) || "source list is not an array",
+  },
+  {
+    name: "source_status",
+    tool: "source_status",
+    args: () => ({ source_id: SOURCE_HOLDER.id ?? "" }),
+    skip: () => !SOURCE_HOLDER.id,
+    expect: (r) => Boolean((extractJson(r) as { source?: unknown } | null)?.source) || "source status missing",
+  },
+  {
+    name: "start_source_sync (generic guard)",
+    tool: "start_source_sync",
+    args: () => ({ source_id: SOURCE_HOLDER.id ?? "" }),
+    skip: () => !SOURCE_HOLDER.id,
+    note: "generic sources reject transcript sync but must return a structured response",
+    expect: () => true,
+  },
+  {
+    name: "health_report",
+    tool: "health_report",
+    expect: (r) => isNonEmptyString((extractJson(r) as { status?: string } | null)?.status) || "health status missing",
+  },
+  {
+    name: "start_integrity_check",
+    tool: "start_integrity_check",
+    args: { project_id: TEST_PROJECT },
+    expect: (r) => {
+      const j = extractJson(r) as { id?: string } | null;
+      if (!j?.id) return "integrity operation id missing";
+      INTEGRITY_HOLDER.operationId = j.id;
+      return true;
+    },
+  },
+  {
+    name: "integrity_report",
+    tool: "integrity_report",
+    args: { project_id: TEST_PROJECT },
+    expect: () => true,
+  },
+  {
+    name: "repair_integrity (empty guard)",
+    tool: "repair_integrity",
+    args: { project_id: TEST_PROJECT, integrity_run_id: "missing-smoke-run", issue_ids: [], dry_run: true },
+    expect: () => true,
+  },
+  {
+    name: "get_maintenance_policy",
+    tool: "get_maintenance_policy",
+    args: { project_id: TEST_PROJECT },
+    expect: (r) => (extractJson(r) as { project_id?: string } | null)?.project_id === TEST_PROJECT || "maintenance policy missing",
+  },
+  {
+    name: "update_maintenance_policy",
+    tool: "update_maintenance_policy",
+    args: { project_id: TEST_PROJECT, enabled: true, interval_hours: 24, idle_delay_seconds: 120, auto_safe_repairs: true, last_run_at: null, next_run_at: null, updated_at: 0 },
+    expect: (r) => (extractJson(r) as { interval_hours?: number } | null)?.interval_hours === 24 || "maintenance policy update failed",
+  },
+  {
+    name: "accelerator_status",
+    tool: "accelerator_status",
+    expect: (r) => Array.isArray((extractJson(r) as { compiled_providers?: unknown[] } | null)?.compiled_providers) || "accelerator status missing",
+  },
+  {
+    name: "get_accelerator_preference",
+    tool: "get_accelerator_preference",
+    expect: (r) => isNonEmptyString((extractJson(r) as { provider?: string } | null)?.provider) || "accelerator preference missing",
+  },
+  {
+    name: "set_accelerator_preference",
+    tool: "set_accelerator_preference",
+    args: { provider: "auto" },
+    expect: (r) => (extractJson(r) as { provider?: string } | null)?.provider === "auto" || "accelerator preference update failed",
+  },
+  {
+    name: "reranker_status",
+    tool: "reranker_status",
+    expect: (r) => isNonEmptyString((extractJson(r) as { model_name?: string } | null)?.model_name) || "reranker status missing",
+  },
+  {
+    name: "set_reranker_enabled (disabled)",
+    tool: "set_reranker_enabled",
+    args: { enabled: false },
+    expect: (r) => (extractJson(r) as { enabled?: boolean } | null)?.enabled === false || "reranker disable failed",
+  },
+  {
+    name: "start_reranker_download",
+    tool: "start_reranker_download",
+    skip: true,
+    note: "explicit network download is intentionally not started by smoke tests",
+  },
+  {
+    name: "import_reranker_artifact (missing guard)",
+    tool: "import_reranker_artifact",
+    args: { path: "/nonexistent-reranker-artifact" },
+    expect: () => true,
   },
   {
     name: "start_ingest",
