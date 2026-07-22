@@ -285,3 +285,24 @@ fn cache_key(text: &str) -> String {
     hasher.update(text.as_bytes());
     hex::encode(hasher.finalize())
 }
+
+#[cfg(all(test, feature = "cuda"))]
+mod cuda_tests {
+    use super::*;
+
+    #[test]
+    fn cuda_runtime_smoke() {
+        assert!(
+            crate::accelerator::cuda_available(),
+            "CUDA execution provider is not available on the GPU release runner"
+        );
+        std::env::set_var("BITURBO_EMBED_EP", "cuda");
+        let embedder = Embedder::new(DEFAULT_MODEL).unwrap();
+        let vector = embedder.embed("biTurbo CUDA runtime smoke test").unwrap();
+        assert_eq!(vector.len(), DEFAULT_DIM);
+        assert_eq!(
+            crate::accelerator::requested_provider(),
+            "cuda".to_string()
+        );
+    }
+}

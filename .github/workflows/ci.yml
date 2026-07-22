@@ -70,3 +70,26 @@ jobs:
           echo placeholder > src-tauri/binaries/biturbo-mcp-x86_64-unknown-linux-gnu
       - run: npm run mcp:build
       - run: npm run mcp:test
+
+  cuda-compile:
+    name: CUDA feature compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libopenblas-dev \
+            librsvg2-dev \
+            patchelf
+      - name: Create sidecar placeholder
+        run: |
+          mkdir -p src-tauri/binaries
+          echo placeholder > src-tauri/binaries/biturbo-mcp-x86_64-unknown-linux-gnu
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --features cuda --bin biturbo-mcp
