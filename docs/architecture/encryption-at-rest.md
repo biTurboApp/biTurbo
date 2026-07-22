@@ -41,4 +41,3 @@ separate checkpointed operation.
 Library selection, recovery-key UX, Linux key-store fallback, and exact file
 format require a separately reviewed security implementation. No production
 dependency, key, schema encryption, or marketing claim is introduced in v0.3.
-
