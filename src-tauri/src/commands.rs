@@ -672,6 +672,170 @@ pub fn install_mcp_config(
     })
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CandidateListArgs {
+    pub project_id: Option<String>,
+    pub status: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IntegrityArgs {
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SourceIdArgs {
+    pub source_id: String,
+}
+
+#[tauri::command]
+pub fn submit_observation(
+    state: State<'_, AppState>,
+    input: crate::capture::SubmitObservationInput,
+) -> BiResult<crate::capture::SubmitObservationResult> {
+    crate::capture::submit_observation(state.inner(), input)
+}
+
+#[tauri::command]
+pub fn list_memory_candidates(
+    state: State<'_, AppState>,
+    args: CandidateListArgs,
+) -> BiResult<Vec<crate::capture::MemoryCandidate>> {
+    crate::capture::list_candidates(
+        state.inner(),
+        args.project_id.as_deref(),
+        args.status.as_deref(),
+        args.limit.unwrap_or(100),
+        args.offset.unwrap_or(0),
+    )
+}
+
+#[tauri::command]
+pub fn get_memory_candidate(
+    state: State<'_, AppState>,
+    candidate_id: String,
+) -> BiResult<crate::capture::MemoryCandidate> {
+    crate::capture::get_candidate(state.inner(), &candidate_id)
+}
+
+#[tauri::command]
+pub fn review_memory_candidate(
+    state: State<'_, AppState>,
+    input: crate::capture::CandidateDecisionInput,
+) -> BiResult<crate::capture::CandidateDecisionResult> {
+    crate::capture::review_candidate(state.inner(), input)
+}
+
+#[tauri::command]
+pub fn get_capture_policy(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> BiResult<crate::capture::CapturePolicy> {
+    crate::capture::get_capture_policy(state.inner(), &project_id)
+}
+
+#[tauri::command]
+pub fn update_capture_policy(
+    state: State<'_, AppState>,
+    policy: crate::capture::CapturePolicy,
+) -> BiResult<crate::capture::CapturePolicy> {
+    crate::capture::update_capture_policy(state.inner(), policy)
+}
+
+#[tauri::command]
+pub fn list_observation_sources(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> BiResult<Vec<crate::capture::ObservationSource>> {
+    crate::capture::list_sources(state.inner(), project_id.as_deref())
+}
+
+#[tauri::command]
+pub fn configure_observation_source(
+    state: State<'_, AppState>,
+    source: crate::capture::ObservationSource,
+) -> BiResult<crate::capture::ObservationSource> {
+    crate::capture::upsert_source(state.inner(), source)
+}
+
+#[tauri::command]
+pub fn source_status(
+    state: State<'_, AppState>,
+    args: SourceIdArgs,
+) -> BiResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "source": crate::sources::get_source(state.inner(), &args.source_id)?,
+        "checkpoint": crate::sources::checkpoint(state.inner(), &args.source_id)?
+    }))
+}
+
+#[tauri::command]
+pub fn start_source_sync(
+    state: State<'_, AppState>,
+    args: SourceIdArgs,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::start_source_sync(state.inner(), &args.source_id)
+}
+
+#[tauri::command]
+pub fn health_report(state: State<'_, AppState>) -> BiResult<crate::integrity::HealthReport> {
+    crate::integrity::health_report(state.inner())
+}
+
+#[tauri::command]
+pub fn start_integrity_check(
+    state: State<'_, AppState>,
+    args: IntegrityArgs,
+) -> BiResult<crate::operations::Operation> {
+    crate::operations::start_integrity_check(state.inner(), args.project_id.as_deref())
+}
+
+#[tauri::command]
+pub fn integrity_report(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    project_id: Option<String>,
+) -> BiResult<Option<crate::integrity::IntegrityReport>> {
+    if let Some(id) = id {
+        return Ok(Some(crate::integrity::report_by_id(state.inner(), &id)?));
+    }
+    crate::integrity::latest_report(state.inner(), project_id.as_deref())
+}
+
+#[tauri::command]
+pub fn repair_integrity(
+    state: State<'_, AppState>,
+    request: crate::integrity::RepairRequest,
+) -> BiResult<serde_json::Value> {
+    if request.dry_run {
+        return Ok(serde_json::to_value(crate::integrity::repair(
+            state.inner(),
+            request,
+        )?)?);
+    }
+    Ok(serde_json::to_value(
+        crate::operations::start_integrity_repair(state.inner(), request)?,
+    )?)
+}
+
+#[tauri::command]
+pub fn get_maintenance_policy(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> BiResult<crate::integrity::MaintenancePolicy> {
+    crate::integrity::get_maintenance_policy(state.inner(), &project_id)
+}
+
+#[tauri::command]
+pub fn update_maintenance_policy(
+    state: State<'_, AppState>,
+    policy: crate::integrity::MaintenancePolicy,
+) -> BiResult<crate::integrity::MaintenancePolicy> {
+    crate::integrity::update_maintenance_policy(state.inner(), policy)
+}
+
 #[derive(Serialize)]
 pub struct UpdateInfo {
     pub version: String,

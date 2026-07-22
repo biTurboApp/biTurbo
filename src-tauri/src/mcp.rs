@@ -107,7 +107,7 @@ const MCP_INSTRUCTIONS: &str = r#"## biTurbo Memory Layer
 
 Use `register_agent` and `list_projects` at session start. Before non-trivial work, call `recall_for_context` with the active project. Store only durable facts, decisions, preferences, patterns, episodes, reflections, or indexed code; never store secrets or transient state. Always pass `project_id` to preserve isolation.
 
-The 27-tool public surface includes compatible memory/project APIs plus explainable recall (`recall_explain`, `submit_recall_feedback`) and supervised operations (`start_ingest`, `operation_status`, `list_operations`, `cancel_operation`, `retry_operation`). Legacy `ingest_project` and `consolidate` remain synchronous."#;
+The additive public surface includes compatible memory/project APIs plus explainable recall, supervised operations, privacy-preserving observation candidates, source sync, and integrity repair. Observations create reviewable candidates by default; use `review_memory_candidate` to approve them. Legacy `ingest_project` and `consolidate` remain synchronous."#;
 
 async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<Vec<Value>> {
     let text = |v: &str| vec![json!({ "type": "text", "text": v })];
@@ -199,6 +199,117 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
                 .unwrap_or("explicit");
             crate::recall::submit_feedback(state, &recall_id, &memory_uid, value, source)?;
             text("{\"recorded\":true}")
+        }
+        "submit_observation" => {
+            let input: crate::capture::SubmitObservationInput = serde_json::from_value(args)?;
+            text(&serde_json::to_string_pretty(
+                &crate::capture::submit_observation(state, input)?,
+            )?)
+        }
+        "list_memory_candidates" => {
+            let project_id = args.get("project_id").and_then(|value| value.as_str());
+            let status = args.get("status").and_then(|value| value.as_str());
+            let limit = args
+                .get("limit")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(100) as usize;
+            let offset = args
+                .get("offset")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as usize;
+            text(&serde_json::to_string_pretty(
+                &crate::capture::list_candidates(state, project_id, status, limit, offset)?,
+            )?)
+        }
+        "get_memory_candidate" => {
+            let id = arg_str(&args, "candidate_id")?;
+            text(&serde_json::to_string_pretty(
+                &crate::capture::get_candidate(state, &id)?,
+            )?)
+        }
+        "review_memory_candidate" => {
+            let input: crate::capture::CandidateDecisionInput = serde_json::from_value(args)?;
+            text(&serde_json::to_string_pretty(
+                &crate::capture::review_candidate(state, input)?,
+            )?)
+        }
+        "get_capture_policy" => {
+            let project_id = arg_str(&args, "project_id")?;
+            text(&serde_json::to_string_pretty(
+                &crate::capture::get_capture_policy(state, &project_id)?,
+            )?)
+        }
+        "update_capture_policy" => {
+            let policy: crate::capture::CapturePolicy = serde_json::from_value(args)?;
+            text(&serde_json::to_string_pretty(
+                &crate::capture::update_capture_policy(state, policy)?,
+            )?)
+        }
+        "list_observation_sources" => {
+            let project_id = args.get("project_id").and_then(|value| value.as_str());
+            text(&serde_json::to_string_pretty(
+                &crate::capture::list_sources(state, project_id)?,
+            )?)
+        }
+        "configure_observation_source" => {
+            let source: crate::capture::ObservationSource = serde_json::from_value(args)?;
+            text(&serde_json::to_string_pretty(
+                &crate::capture::upsert_source(state, source)?,
+            )?)
+        }
+        "source_status" => {
+            let source_id = arg_str(&args, "source_id")?;
+            text(&serde_json::to_string_pretty(&json!({
+                "source": crate::sources::get_source(state, &source_id)?,
+                "checkpoint": crate::sources::checkpoint(state, &source_id)?
+            }))?)
+        }
+        "start_source_sync" => {
+            let source_id = arg_str(&args, "source_id")?;
+            text(&serde_json::to_string_pretty(
+                &crate::operations::start_source_sync(state, &source_id)?,
+            )?)
+        }
+        "health_report" => text(&serde_json::to_string_pretty(
+            &crate::integrity::health_report(state)?,
+        )?),
+        "start_integrity_check" => {
+            let project_id = args.get("project_id").and_then(|value| value.as_str());
+            text(&serde_json::to_string_pretty(
+                &crate::operations::start_integrity_check(state, project_id)?,
+            )?)
+        }
+        "integrity_report" => {
+            let report = if let Some(id) = args.get("id").and_then(|value| value.as_str()) {
+                Some(crate::integrity::report_by_id(state, id)?)
+            } else {
+                crate::integrity::latest_report(
+                    state,
+                    args.get("project_id").and_then(|value| value.as_str()),
+                )?
+            };
+            text(&serde_json::to_string_pretty(&report)?)
+        }
+        "repair_integrity" => {
+            let request: crate::integrity::RepairRequest = serde_json::from_value(args)?;
+            let value = if request.dry_run {
+                serde_json::to_value(crate::integrity::repair(state, request)?)?
+            } else {
+                serde_json::to_value(crate::operations::start_integrity_repair(state, request)?)?
+            };
+            text(&serde_json::to_string_pretty(&value)?)
+        }
+        "get_maintenance_policy" => {
+            let project_id = arg_str(&args, "project_id")?;
+            text(&serde_json::to_string_pretty(
+                &crate::integrity::get_maintenance_policy(state, &project_id)?,
+            )?)
+        }
+        "update_maintenance_policy" => {
+            let policy: crate::integrity::MaintenancePolicy = serde_json::from_value(args)?;
+            text(&serde_json::to_string_pretty(
+                &crate::integrity::update_maintenance_policy(state, policy)?,
+            )?)
         }
         "list_projects" => text(&serde_json::to_string_pretty(&project::list(state)?)?),
         "get_project" => {
@@ -552,6 +663,22 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"recall_for_context","description":"Build a <biTurboContext> block of top-k relevant memories. Pass project_id or root_path (reads .biTurbo).","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"root_path":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
 {"name":"recall_explain","description":"Recall ranked memories with source ranks, matched terms, feedback boost, and a recall id.","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"root_path":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
 {"name":"submit_recall_feedback","description":"Record useful or not-useful feedback for one recalled memory.","inputSchema":{"type":"object","required":["recall_id","memory_uid","value"],"properties":{"recall_id":{"type":"string"},"memory_uid":{"type":"string"},"value":{"type":"number"},"source":{"type":"string"}}}},
+{"name":"submit_observation","description":"Submit a local observation. It creates reviewable candidates and never persists the raw body.","inputSchema":{"type":"object","required":["project_id","source_kind","external_id","occurred_at","role","content"],"properties":{"project_id":{"type":"string"},"source_kind":{"type":"string","enum":["generic","codex","claude_code"]},"external_id":{"type":"string"},"session_id":{"type":"string"},"occurred_at":{"type":"number"},"role":{"type":"string"},"content":{"type":"string"},"metadata":{"type":"object"}}}},
+{"name":"list_memory_candidates","description":"List reviewable memory candidates.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"},"status":{"type":"string"},"limit":{"type":"number"},"offset":{"type":"number"}}}},
+{"name":"get_memory_candidate","description":"Get one candidate and its redacted evidence.","inputSchema":{"type":"object","required":["candidate_id"],"properties":{"candidate_id":{"type":"string"}}}},
+{"name":"review_memory_candidate","description":"Approve, edit-and-approve, reject, merge, or defer a candidate using optimistic versioning.","inputSchema":{"type":"object","required":["candidate_id","action","expected_version"],"properties":{"candidate_id":{"type":"string"},"action":{"type":"string","enum":["approve","edit_and_approve","reject","merge","defer"]},"edited_content":{"type":"string"},"target_memory_uid":{"type":"string"},"expected_version":{"type":"number"},"decided_by":{"type":"string"}}}},
+{"name":"get_capture_policy","description":"Get project automatic-capture settings.","inputSchema":{"type":"object","required":["project_id"],"properties":{"project_id":{"type":"string"}}}},
+{"name":"update_capture_policy","description":"Replace project automatic-capture settings.","inputSchema":{"type":"object","required":["project_id","enabled_sources","allowed_categories","extraction_mode","ollama_endpoint","approval_mode","auto_approve_categories","evidence_max_chars","redaction_mode","notify_candidates","updated_at"],"properties":{"project_id":{"type":"string"},"enabled_sources":{"type":"array","items":{"type":"string"}},"allowed_categories":{"type":"array","items":{"type":"string"}},"extraction_mode":{"type":"string"},"ollama_endpoint":{"type":"string"},"ollama_model":{"type":"string"},"approval_mode":{"type":"string"},"auto_approve_categories":{"type":"array","items":{"type":"string"}},"evidence_max_chars":{"type":"number"},"redaction_mode":{"type":"string"},"notify_candidates":{"type":"boolean"},"updated_at":{"type":"number"}}}},
+{"name":"list_observation_sources","description":"List configured local transcript sources.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}}},
+{"name":"configure_observation_source","description":"Create or update an opt-in Codex or Claude Code transcript source.","inputSchema":{"type":"object","required":["id","project_id","kind","name","enabled","config","processed_count","candidate_count","created_at","updated_at"],"properties":{"id":{"type":"string"},"project_id":{"type":"string"},"kind":{"type":"string"},"name":{"type":"string"},"root_path":{"type":"string"},"enabled":{"type":"boolean"},"config":{"type":"object"},"processed_count":{"type":"number"},"candidate_count":{"type":"number"},"created_at":{"type":"number"},"updated_at":{"type":"number"}}}},
+{"name":"source_status","description":"Get transcript source status and checkpoint.","inputSchema":{"type":"object","required":["source_id"],"properties":{"source_id":{"type":"string"}}}},
+{"name":"start_source_sync","description":"Start a supervised read-only transcript sync.","inputSchema":{"type":"object","required":["source_id"],"properties":{"source_id":{"type":"string"}}}},
+{"name":"health_report","description":"Return local runtime health without mutating data.","inputSchema":{"type":"object","properties":{}}},
+{"name":"start_integrity_check","description":"Start a supervised integrity audit.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}}},
+{"name":"integrity_report","description":"Get an integrity report by id or the latest report.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"project_id":{"type":"string"}}}},
+{"name":"repair_integrity","description":"Plan or start safe derived-state repairs. Semantic issues are rejected.","inputSchema":{"type":"object","required":["integrity_run_id","issue_ids","dry_run"],"properties":{"project_id":{"type":"string"},"integrity_run_id":{"type":"string"},"issue_ids":{"type":"array","items":{"type":"string"}},"dry_run":{"type":"boolean"}}}},
+{"name":"get_maintenance_policy","description":"Get autonomous maintenance settings for a project.","inputSchema":{"type":"object","required":["project_id"],"properties":{"project_id":{"type":"string"}}}},
+{"name":"update_maintenance_policy","description":"Replace autonomous maintenance settings for a project.","inputSchema":{"type":"object","required":["project_id","enabled","interval_hours","idle_delay_seconds","auto_safe_repairs","updated_at"],"properties":{"project_id":{"type":"string"},"enabled":{"type":"boolean"},"interval_hours":{"type":"number"},"idle_delay_seconds":{"type":"number"},"auto_safe_repairs":{"type":"boolean"},"last_run_at":{"type":"number"},"next_run_at":{"type":"number"},"updated_at":{"type":"number"}}}},
 {"name":"list_projects","description":"List all projects.","inputSchema":{"type":"object","properties":{}}},
 {"name":"get_project","description":"Fetch one project by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"create_project","description":"Create a new project.","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"id":{"type":"string"},"description":{"type":"string"},"root_path":{"type":"string"},"bit_width":{"type":"number"}}}},
