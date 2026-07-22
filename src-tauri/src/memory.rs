@@ -344,6 +344,17 @@ pub fn search(
         .filter_map(|r| r.ok())
         .map(|m| (m.uid.clone(), m))
         .collect();
+    let contradicted_uids: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare_cached(
+            "SELECT DISTINCT contradiction_uid FROM memory_candidates
+             WHERE project_id=?1 AND status='pending' AND contradiction_uid IS NOT NULL",
+        )?;
+        let uids = stmt
+            .query_map(rusqlite::params![project_id], |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+        uids
+    };
     drop(stmt);
     drop(conn);
 
@@ -389,12 +400,17 @@ pub fn search(
         .into_iter()
         .filter_map(|(uid, base_score)| {
             by_uid.remove(&uid).map(|memory| {
-                let reranked_score =
-                    crate::recall::apply_ranking_boost(base_score, &memory, &query_terms)
-                        + feedback_boosts.get(&uid).copied().unwrap_or(0.0);
+                let base = crate::recall::apply_ranking_boost(base_score, &memory, &query_terms)
+                    + feedback_boosts.get(&uid).copied().unwrap_or(0.0);
+                let stale_penalty = crate::recall::stale_penalty(&memory);
+                let contradiction_penalty = if contradicted_uids.contains(&uid) {
+                    0.015
+                } else {
+                    0.0
+                };
                 MemoryWithScore {
                     memory,
-                    score: reranked_score,
+                    score: base - stale_penalty - contradiction_penalty,
                 }
             })
         })
@@ -407,6 +423,7 @@ pub fn search(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    let reranked = crate::reranker::rerank_if_enabled(state, query, reranked);
     Ok(reranked.into_iter().take(k).collect())
 }
 

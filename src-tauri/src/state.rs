@@ -54,6 +54,7 @@ impl AppState {
         std::fs::create_dir_all(data_dir).ok();
         let db_path = data_dir.join("biturbo.db");
         let db = Db::open(&db_path)?;
+        crate::accelerator::load_preference(&db)?;
 
         let embedder = Arc::new(Embedder::new("BGE-small-en")?);
 

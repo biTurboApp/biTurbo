@@ -104,6 +104,7 @@ ureq = { version = "2.12.1", features = ["json"] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+cuda = ["ort/cuda"]
 
 [profile.release]
 panic = "abort"

@@ -836,6 +836,54 @@ pub fn update_maintenance_policy(
     crate::integrity::update_maintenance_policy(state.inner(), policy)
 }
 
+#[tauri::command]
+pub fn accelerator_status(
+    state: State<'_, AppState>,
+) -> BiResult<crate::accelerator::AcceleratorStatus> {
+    crate::accelerator::status(state.inner())
+}
+
+#[tauri::command]
+pub fn get_accelerator_preference() -> String {
+    crate::accelerator::persisted_preference()
+}
+
+#[tauri::command]
+pub fn set_accelerator_preference(
+    state: State<'_, AppState>,
+    provider: String,
+) -> BiResult<String> {
+    crate::accelerator::set_preference(state.inner(), &provider)
+}
+
+#[tauri::command]
+pub fn reranker_status(state: State<'_, AppState>) -> BiResult<crate::reranker::RerankerStatus> {
+    crate::reranker::status(state.inner())
+}
+
+#[tauri::command]
+pub fn start_reranker_download(
+    state: State<'_, AppState>,
+) -> BiResult<crate::operations::Operation> {
+    crate::reranker::start_download(state.inner())
+}
+
+#[tauri::command]
+pub fn set_reranker_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> BiResult<crate::reranker::RerankerStatus> {
+    crate::reranker::set_enabled(state.inner(), enabled)
+}
+
+#[tauri::command]
+pub fn import_reranker_artifact(
+    state: State<'_, AppState>,
+    path: String,
+) -> BiResult<crate::reranker::RerankerStatus> {
+    crate::reranker::import_artifact(state.inner(), std::path::Path::new(&path))
+}
+
 #[derive(Serialize)]
 pub struct UpdateInfo {
     pub version: String,

@@ -3,13 +3,16 @@ use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use hex;
 use lru::LruCache;
 use once_cell::sync::Lazy;
-use ort::execution_providers::CPUExecutionProvider;
+use ort::execution_providers::{CPUExecutionProvider, ExecutionProviderDispatch};
 use parking_lot::{Mutex, RwLock};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing;
+
+#[cfg(feature = "cuda")]
+use ort::execution_providers::CUDAExecutionProvider;
 
 static EMBED_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -125,6 +128,7 @@ impl Embedder {
             .ok_or_else(|| BiError::Embed("model released mid-embed".into()))?;
 
         for chunk in texts.chunks(EMBED_BATCH) {
+            let started = Instant::now();
             let results = model
                 .embed(chunk.to_vec(), Some(EMBED_BATCH))
                 .map_err(|e| {
@@ -134,6 +138,7 @@ impl Embedder {
                     );
                     BiError::Embed(format!("embed_batch_uncached: {e}"))
                 })?;
+            crate::accelerator::record_inference(started.elapsed());
             on_batch(chunk, results)?;
         }
 
@@ -182,17 +187,97 @@ fn load_model(model_enum: EmbeddingModel) -> BiResult<TextEmbedding> {
     // Without this, ONNX Runtime pre-allocates and holds a large arena across
     // every inference call, growing to multiple GB during batch embedding.
     // CPUExecutionProvider::default() has use_arena=false, so this disables it.
-    let cpu_ep = CPUExecutionProvider::default().build();
+    let preference = crate::accelerator::validate_requested_provider()?;
+    let cache = dirs::cache_dir()
+        .ok_or_else(|| BiError::Embed("no cache dir".into()))?
+        .join("biturbo/models");
+    let started = Instant::now();
+    let try_with = |providers: Vec<ExecutionProviderDispatch>| {
+        TextEmbedding::try_new(
+            InitOptions::new(model_enum.clone())
+                .with_execution_providers(providers)
+                .with_show_download_progress(false)
+                .with_cache_dir(cache.clone()),
+        )
+    };
+    let cpu = || CPUExecutionProvider::default().build();
+    match preference.as_str() {
+        "cpu" => {
+            let model = try_with(vec![cpu()]).map_err(|error| {
+                crate::accelerator::mark_error(&error.to_string());
+                BiError::Embed(format!("CPU provider initialization failed: {error}"))
+            })?;
+            crate::accelerator::mark_initialized("cpu", started.elapsed().as_millis() as u64);
+            Ok(model)
+        }
+        "cuda" => load_required_cuda(try_with, started),
+        "auto" => load_auto_provider(try_with, cpu, started),
+        _ => unreachable!(),
+    }
+}
 
-    let opts = InitOptions::new(model_enum)
-        .with_execution_providers(vec![cpu_ep])
-        .with_show_download_progress(false)
-        .with_cache_dir(
-            dirs::cache_dir()
-                .ok_or_else(|| BiError::Embed("no cache dir".into()))?
-                .join("biturbo/models"),
-        );
-    TextEmbedding::try_new(opts).map_err(|e| BiError::Embed(format!("init: {e}")))
+#[cfg(feature = "cuda")]
+fn load_required_cuda<F>(try_with: F, started: Instant) -> BiResult<TextEmbedding>
+where
+    F: Fn(Vec<ExecutionProviderDispatch>) -> Result<TextEmbedding, anyhow::Error>,
+{
+    if !crate::accelerator::cuda_available() {
+        let error = "CUDA was explicitly requested but the execution provider is unavailable";
+        crate::accelerator::mark_error(error);
+        return Err(BiError::Embed(error.into()));
+    }
+    let model = try_with(vec![CUDAExecutionProvider::default().build()]).map_err(|error| {
+        crate::accelerator::mark_error(&error.to_string());
+        BiError::Embed(format!("CUDA provider initialization failed: {error}"))
+    })?;
+    crate::accelerator::mark_initialized("cuda", started.elapsed().as_millis() as u64);
+    Ok(model)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn load_required_cuda<F>(_try_with: F, _started: Instant) -> BiResult<TextEmbedding>
+where
+    F: Fn(Vec<ExecutionProviderDispatch>) -> Result<TextEmbedding, anyhow::Error>,
+{
+    let error = "CUDA was explicitly requested but this binary was built without the cuda feature";
+    crate::accelerator::mark_error(error);
+    Err(BiError::Embed(error.into()))
+}
+
+#[cfg(feature = "cuda")]
+fn load_auto_provider<F, C>(try_with: F, cpu: C, started: Instant) -> BiResult<TextEmbedding>
+where
+    F: Fn(Vec<ExecutionProviderDispatch>) -> Result<TextEmbedding, anyhow::Error>,
+    C: Fn() -> ExecutionProviderDispatch,
+{
+    if crate::accelerator::cuda_available() {
+        match try_with(vec![CUDAExecutionProvider::default().build(), cpu()]) {
+            Ok(model) => {
+                crate::accelerator::mark_initialized("cuda", started.elapsed().as_millis() as u64);
+                return Ok(model);
+            }
+            Err(error) => {
+                crate::accelerator::mark_fallback(&error.to_string());
+                tracing::warn!("CUDA initialization failed; falling back to CPU: {error}");
+            }
+        }
+    }
+    let model = try_with(vec![cpu()])
+        .map_err(|error| BiError::Embed(format!("CPU provider initialization failed: {error}")))?;
+    crate::accelerator::mark_initialized("cpu", started.elapsed().as_millis() as u64);
+    Ok(model)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn load_auto_provider<F, C>(try_with: F, cpu: C, started: Instant) -> BiResult<TextEmbedding>
+where
+    F: Fn(Vec<ExecutionProviderDispatch>) -> Result<TextEmbedding, anyhow::Error>,
+    C: Fn() -> ExecutionProviderDispatch,
+{
+    let model = try_with(vec![cpu()])
+        .map_err(|error| BiError::Embed(format!("CPU provider initialization failed: {error}")))?;
+    crate::accelerator::mark_initialized("cpu", started.elapsed().as_millis() as u64);
+    Ok(model)
 }
 
 fn cache_key(text: &str) -> String {

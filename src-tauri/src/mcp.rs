@@ -311,6 +311,40 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
                 &crate::integrity::update_maintenance_policy(state, policy)?,
             )?)
         }
+        "accelerator_status" => text(&serde_json::to_string_pretty(&crate::accelerator::status(
+            state,
+        )?)?),
+        "get_accelerator_preference" => text(&serde_json::to_string_pretty(&json!({
+            "provider": crate::accelerator::persisted_preference(),
+            "environment_override": std::env::var("BITURBO_EMBED_EP").ok()
+        }))?),
+        "set_accelerator_preference" => {
+            let provider = arg_str(&args, "provider")?;
+            text(&serde_json::to_string_pretty(&json!({
+                "provider": crate::accelerator::set_preference(state, &provider)?
+            }))?)
+        }
+        "reranker_status" => text(&serde_json::to_string_pretty(&crate::reranker::status(
+            state,
+        )?)?),
+        "start_reranker_download" => text(&serde_json::to_string_pretty(
+            &crate::reranker::start_download(state)?,
+        )?),
+        "set_reranker_enabled" => {
+            let enabled = args
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| BiError::Invalid("missing boolean arg: enabled".into()))?;
+            text(&serde_json::to_string_pretty(
+                &crate::reranker::set_enabled(state, enabled)?,
+            )?)
+        }
+        "import_reranker_artifact" => {
+            let path = arg_str(&args, "path")?;
+            text(&serde_json::to_string_pretty(
+                &crate::reranker::import_artifact(state, std::path::Path::new(&path))?,
+            )?)
+        }
         "list_projects" => text(&serde_json::to_string_pretty(&project::list(state)?)?),
         "get_project" => {
             let id = arg_str(&args, "id")?;
@@ -679,6 +713,13 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"repair_integrity","description":"Plan or start safe derived-state repairs. Semantic issues are rejected.","inputSchema":{"type":"object","required":["integrity_run_id","issue_ids","dry_run"],"properties":{"project_id":{"type":"string"},"integrity_run_id":{"type":"string"},"issue_ids":{"type":"array","items":{"type":"string"}},"dry_run":{"type":"boolean"}}}},
 {"name":"get_maintenance_policy","description":"Get autonomous maintenance settings for a project.","inputSchema":{"type":"object","required":["project_id"],"properties":{"project_id":{"type":"string"}}}},
 {"name":"update_maintenance_policy","description":"Replace autonomous maintenance settings for a project.","inputSchema":{"type":"object","required":["project_id","enabled","interval_hours","idle_delay_seconds","auto_safe_repairs","updated_at"],"properties":{"project_id":{"type":"string"},"enabled":{"type":"boolean"},"interval_hours":{"type":"number"},"idle_delay_seconds":{"type":"number"},"auto_safe_repairs":{"type":"boolean"},"last_run_at":{"type":"number"},"next_run_at":{"type":"number"},"updated_at":{"type":"number"}}}},
+{"name":"accelerator_status","description":"Report compiled, requested, and effective local inference providers.","inputSchema":{"type":"object","properties":{}}},
+{"name":"get_accelerator_preference","description":"Get persisted execution-provider preference and environment override.","inputSchema":{"type":"object","properties":{}}},
+{"name":"set_accelerator_preference","description":"Set device execution provider to auto, cpu, or cuda.","inputSchema":{"type":"object","required":["provider"],"properties":{"provider":{"type":"string","enum":["auto","cpu","cuda"]}}}},
+{"name":"reranker_status","description":"Report local cross-encoder installation, enablement, and fallback state.","inputSchema":{"type":"object","properties":{}}},
+{"name":"start_reranker_download","description":"Explicitly download and verify the pinned local cross-encoder.","inputSchema":{"type":"object","properties":{}}},
+{"name":"set_reranker_enabled","description":"Enable or disable local cross-encoder reranking.","inputSchema":{"type":"object","required":["enabled"],"properties":{"enabled":{"type":"boolean"}}}},
+{"name":"import_reranker_artifact","description":"Import and verify a complete offline reranker artifact directory.","inputSchema":{"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}},
 {"name":"list_projects","description":"List all projects.","inputSchema":{"type":"object","properties":{}}},
 {"name":"get_project","description":"Fetch one project by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"create_project","description":"Create a new project.","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"id":{"type":"string"},"description":{"type":"string"},"root_path":{"type":"string"},"bit_width":{"type":"number"}}}},

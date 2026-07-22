@@ -14,6 +14,24 @@ pub struct RecallExplanation {
     pub matched_terms: Vec<String>,
     pub feedback_boost: f32,
     pub applied_boosts: RankingBoosts,
+    #[serde(default)]
+    pub reciprocal_rank_contribution: f32,
+    #[serde(default)]
+    pub recency_contribution: f32,
+    #[serde(default)]
+    pub explicit_feedback_boost: f32,
+    #[serde(default)]
+    pub implicit_feedback_boost: f32,
+    #[serde(default)]
+    pub staleness_penalty: f32,
+    #[serde(default)]
+    pub contradiction_penalty: f32,
+    #[serde(default)]
+    pub pre_reranker_score: f32,
+    #[serde(default)]
+    pub reranker_applied: bool,
+    #[serde(default)]
+    pub active_filters: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +104,20 @@ pub fn explain(
             .collect::<Vec<_>>(),
     )?;
     let query_terms = normalized_terms(query);
+    let contradicted_uids: std::collections::HashSet<String> = {
+        let conn = state.db.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT contradiction_uid FROM memory_candidates
+             WHERE project_id=?1 AND status='pending' AND contradiction_uid IS NOT NULL",
+        )?;
+        let uids = stmt
+            .query_map(rusqlite::params![project_id], |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+        uids
+    };
+    let reranker_applied =
+        crate::reranker::status(state).is_ok_and(|status| status.last_recall_applied);
     let results: Vec<ExplainedMemory> = hits
         .into_iter()
         .map(|hit| {
@@ -97,14 +129,40 @@ pub fn explain(
                 .cloned()
                 .collect();
             let applied_boosts = ranking_boosts(&hit.memory, &query_terms);
+            let vector_rank = vector_ranks.get(uid.as_str()).copied();
+            let fts_rank = fts_ranks.get(uid.as_str()).copied();
+            let reciprocal_rank_contribution = vector_rank
+                .map(|rank| 1.0 / (60.0 + rank as f32))
+                .unwrap_or(0.0)
+                + fts_rank
+                    .map(|rank| 1.0 / (60.0 + rank as f32))
+                    .unwrap_or(0.0);
+            let feedback = boosts.get(&uid).copied().unwrap_or(0.0);
+            let staleness_penalty = stale_penalty(&hit.memory);
+            let contradiction_penalty = if contradicted_uids.contains(&uid) {
+                0.015
+            } else {
+                0.0
+            };
             ExplainedMemory {
-                hit,
+                hit: hit.clone(),
                 explanation: RecallExplanation {
-                    vector_rank: vector_ranks.get(uid.as_str()).copied(),
-                    fts_rank: fts_ranks.get(uid.as_str()).copied(),
+                    vector_rank,
+                    fts_rank,
                     matched_terms,
-                    feedback_boost: boosts.get(&uid).copied().unwrap_or(0.0),
+                    feedback_boost: feedback,
                     applied_boosts,
+                    reciprocal_rank_contribution,
+                    recency_contribution: (1.0 - staleness_penalty / 0.02).max(0.0) * 0.005,
+                    explicit_feedback_boost: feedback,
+                    implicit_feedback_boost: 0.0,
+                    staleness_penalty,
+                    contradiction_penalty,
+                    pre_reranker_score: hit.score + staleness_penalty + contradiction_penalty,
+                    reranker_applied,
+                    active_filters: mem_type
+                        .map(|value| vec![format!("mem_type:{value}")])
+                        .unwrap_or_default(),
                 },
             }
         })
@@ -132,6 +190,16 @@ pub fn explain(
         Ok(())
     })?;
     Ok(RecallResponse { recall_id, results })
+}
+
+pub(crate) fn stale_penalty(memory: &memory::Memory) -> f32 {
+    let age_ms = chrono::Utc::now().timestamp_millis() - memory.updated_at;
+    let age_days = age_ms.max(0) as f32 / 86_400_000.0;
+    if age_days <= 180.0 {
+        0.0
+    } else {
+        ((age_days - 180.0) / 365.0 * 0.01).clamp(0.0, 0.02)
+    }
 }
 
 pub(crate) fn fuse_rankings(

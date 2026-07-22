@@ -19,6 +19,7 @@
 //! on macOS, %APPDATA%\com.biturbo.app on Windows, ~/.local/share/com.biturbo.app on
 //! Linux). Both the GUI and the MCP server share the same on-disk state.
 
+pub mod accelerator;
 pub mod application;
 pub mod capture;
 pub mod commands;
@@ -37,6 +38,7 @@ pub mod operations;
 pub mod persistence;
 pub mod project;
 pub mod recall;
+pub mod reranker;
 pub mod runtime;
 pub mod scheduler;
 pub mod smoke;
@@ -141,6 +143,13 @@ pub fn run() {
             commands::repair_integrity,
             commands::get_maintenance_policy,
             commands::update_maintenance_policy,
+            commands::accelerator_status,
+            commands::get_accelerator_preference,
+            commands::set_accelerator_preference,
+            commands::reranker_status,
+            commands::start_reranker_download,
+            commands::set_reranker_enabled,
+            commands::import_reranker_artifact,
             commands::list_projects,
             commands::create_project,
             commands::delete_project,
