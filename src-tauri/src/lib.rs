@@ -30,6 +30,7 @@ pub mod index_engine;
 pub mod ingest;
 pub mod integrity;
 pub mod io;
+pub mod maintenance;
 pub mod mcp;
 pub mod memory;
 pub mod operations;

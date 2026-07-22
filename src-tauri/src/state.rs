@@ -80,6 +80,10 @@ impl AppState {
             index_memory_budget: DEFAULT_INDEX_BUDGET,
         };
 
+        // Every consumer (desktop or MCP) participates in overdue local
+        // maintenance. Persisted leases ensure only one process performs it.
+        crate::maintenance::spawn(Arc::new(state.clone()));
+
         // Ensure index files exist on disk, but do NOT load them into memory.
         state.refresh_indices()?;
         state.replay_all_index_mutations()?;

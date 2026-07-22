@@ -39,6 +39,11 @@ pub fn create(
         "multi_ingest" => "multi-ing",
         "consolidate" => "con",
         "model_rebuild" => "model",
+        "integrity_check" => "integrity",
+        "integrity_repair" => "repair",
+        "scheduled_maintenance" => "maintenance",
+        "source_sync" => "source",
+        "reranker_download" => "reranker",
         _ => "op",
     };
     let id = format!("{prefix}-{}", uuid::Uuid::new_v4());
@@ -53,6 +58,99 @@ pub fn create(
         Ok(())
     })?;
     get(state, &id)
+}
+
+pub fn start_integrity_check(state: &AppState, project_id: Option<&str>) -> BiResult<Operation> {
+    if let Some(project_id) = project_id {
+        crate::project::get(state, project_id)?;
+    }
+    let checkpoint = serde_json::json!({"project_id": project_id});
+    let operation = create(state, "integrity_check", project_id, Some(&checkpoint))?;
+    let state = Arc::new(state.clone());
+    let id = operation.id.clone();
+    let project_id = project_id.map(String::from);
+    std::thread::Builder::new()
+        .name(format!("biturbo-operation-{id}"))
+        .spawn(move || {
+            if let Err(error) = execute_integrity_check(&state, &id, project_id.as_deref()) {
+                let _ = fail(&state, &id, &error.to_string());
+            }
+        })
+        .map_err(|error| BiError::Internal(format!("spawn integrity check: {error}")))?;
+    Ok(operation)
+}
+
+fn execute_integrity_check(
+    state: &AppState,
+    operation_id: &str,
+    project_id: Option<&str>,
+) -> BiResult<()> {
+    mark_running(state, operation_id)?;
+    update_progress(state, operation_id, "auditing", 0, 1, None)?;
+    if is_cancel_requested(state, operation_id)? {
+        return mark_cancelled(state, operation_id);
+    }
+    let report = crate::integrity::run_check(state, project_id, "manual")?;
+    update_progress(state, operation_id, "audited", 1, 1, None)?;
+    complete(state, operation_id, &serde_json::to_value(report)?)
+}
+
+pub fn start_integrity_repair(
+    state: &AppState,
+    request: crate::integrity::RepairRequest,
+) -> BiResult<Operation> {
+    if request.dry_run {
+        return Err(BiError::Invalid(
+            "dry-run repairs are synchronous and do not create operations".into(),
+        ));
+    }
+    let checkpoint = serde_json::to_value(&request)?;
+    let operation = create(
+        state,
+        "integrity_repair",
+        request.project_id.as_deref(),
+        Some(&checkpoint),
+    )?;
+    let state = Arc::new(state.clone());
+    let id = operation.id.clone();
+    std::thread::Builder::new()
+        .name(format!("biturbo-operation-{id}"))
+        .spawn(move || {
+            if let Err(error) = execute_integrity_repair(&state, &id, request) {
+                let _ = fail(&state, &id, &error.to_string());
+            }
+        })
+        .map_err(|error| BiError::Internal(format!("spawn integrity repair: {error}")))?;
+    Ok(operation)
+}
+
+fn execute_integrity_repair(
+    state: &AppState,
+    operation_id: &str,
+    request: crate::integrity::RepairRequest,
+) -> BiResult<()> {
+    mark_running(state, operation_id)?;
+    update_progress(
+        state,
+        operation_id,
+        "repairing",
+        0,
+        request.issue_ids.len().max(1),
+        None,
+    )?;
+    if is_cancel_requested(state, operation_id)? {
+        return mark_cancelled(state, operation_id);
+    }
+    let result = crate::integrity::repair(state, request)?;
+    update_progress(
+        state,
+        operation_id,
+        "repaired",
+        result.repaired,
+        result.issue_ids.len().max(1),
+        None,
+    )?;
+    complete(state, operation_id, &serde_json::to_value(result)?)
 }
 
 pub fn get(state: &AppState, id: &str) -> BiResult<Operation> {
