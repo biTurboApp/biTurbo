@@ -99,6 +99,7 @@ once_cell = "1"
 dirs = "5"
 sha2 = "0.10"
 hex = "0.4"
+ureq = { version = "2.12.1", features = ["json"] }
 
 [features]
 default = ["custom-protocol"]

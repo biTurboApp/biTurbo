@@ -173,7 +173,24 @@ pub fn submit_observation(
     if secret_count > 0 {
         warnings.push(format!("redacted {secret_count} potential secret(s)"));
     }
-    let extracted = extract_deterministic(&redacted, &input.role, &policy);
+    let mut extracted = extract_deterministic(&redacted, &input.role, &policy);
+    if policy.extraction_mode == "ollama" {
+        match extract_with_ollama(&redacted, &input.role, &policy) {
+            Ok(ollama_candidates) => {
+                for candidate in ollama_candidates {
+                    if !extracted
+                        .iter()
+                        .any(|existing| existing.content.eq_ignore_ascii_case(&candidate.content))
+                    {
+                        extracted.push(candidate);
+                    }
+                }
+            }
+            Err(error) => warnings.push(format!(
+                "Ollama extraction unavailable; deterministic fallback used: {error}"
+            )),
+        }
+    }
     let observation_id = format!("obs-{}", uuid::Uuid::new_v4());
     let now = chrono::Utc::now().timestamp_millis();
     let occurred_at = if input.occurred_at > 0 {
@@ -786,6 +803,102 @@ fn extract_deterministic(
         tags: vec![tag.into(), "automatic-capture".into()],
         confidence,
     }]
+}
+
+fn extract_with_ollama(
+    content: &str,
+    role: &str,
+    policy: &CapturePolicy,
+) -> BiResult<Vec<ExtractedCandidate>> {
+    if !is_loopback_endpoint(&policy.ollama_endpoint) {
+        return Err(BiError::Invalid(
+            "Ollama endpoint must be loopback-only".into(),
+        ));
+    }
+    let model = policy
+        .ollama_model
+        .as_deref()
+        .ok_or_else(|| BiError::Invalid("Ollama model is not configured".into()))?;
+    let prompt = format!(
+        "Extract only durable coding-agent memories from the observation below. Return strict JSON as {{\"candidates\":[{{\"content\":string,\"mem_type\":\"fact\"|\"decision\"|\"preference\"|\"pattern\",\"tags\":[string],\"confidence\":number}}]}}. Never include credentials, transient progress, speculation, or copied source code. Role: {role}\nObservation:\n{content}"
+    );
+    let endpoint = format!(
+        "{}/api/generate",
+        policy.ollama_endpoint.trim_end_matches('/')
+    );
+    let response = ureq::post(&endpoint)
+        .timeout(std::time::Duration::from_secs(15))
+        .send_json(serde_json::json!({
+            "model": model,
+            "prompt": prompt,
+            "stream": false,
+            "format": "json",
+            "options": {"temperature": 0}
+        }))
+        .map_err(|error| BiError::Internal(format!("Ollama request failed: {error}")))?;
+    let body: serde_json::Value = response
+        .into_json()
+        .map_err(|error| BiError::Internal(format!("invalid Ollama response: {error}")))?;
+    let generated = body
+        .get("response")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| BiError::Internal("Ollama response has no generated JSON".into()))?;
+    let parsed: serde_json::Value = serde_json::from_str(generated)
+        .map_err(|error| BiError::Internal(format!("invalid Ollama candidate JSON: {error}")))?;
+    let candidates = parsed
+        .get("candidates")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| BiError::Internal("Ollama candidate JSON has no candidates array".into()))?;
+    let mut extracted = Vec::new();
+    for candidate in candidates.iter().take(10) {
+        let Some(content) = candidate
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let mem_type = candidate
+            .get("mem_type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("fact");
+        if !matches!(mem_type, "fact" | "decision" | "preference" | "pattern")
+            || !policy
+                .allowed_categories
+                .iter()
+                .any(|allowed| allowed == mem_type)
+        {
+            continue;
+        }
+        let (redacted, secret_count) = redact_secrets(content);
+        if secret_count > 0 || redacted.contains("[REDACTED_SECRET]") {
+            continue;
+        }
+        let tags = candidate
+            .get("tags")
+            .and_then(serde_json::Value::as_array)
+            .map(|tags| {
+                tags.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .take(5)
+                    .map(String::from)
+                    .chain(std::iter::once("ollama-capture".into()))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["ollama-capture".into()]);
+        let confidence = candidate
+            .get("confidence")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.65) as f32;
+        extracted.push(ExtractedCandidate {
+            content: bounded_chars(&redacted, 2_000),
+            mem_type: mem_type.into(),
+            tags,
+            confidence: confidence.clamp(0.0, 1.0),
+        });
+    }
+    Ok(extracted)
 }
 
 fn redact_secrets(input: &str) -> (String, usize) {
