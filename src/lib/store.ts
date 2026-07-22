@@ -13,7 +13,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ConfirmOptions } from "../components/ConfirmModal";
 import type { ContextMenuItem } from "../components/ContextMenu";
 
-export type View = "overview" | "memories" | "projects" | "graph" | "agents" | "settings";
+export type View = "overview" | "memories" | "projects" | "graph" | "agents" | "runtime" | "settings";
 export type Theme = "dark" | "light";
 
 interface AppStore {

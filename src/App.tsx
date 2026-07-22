@@ -9,6 +9,7 @@ import { Projects } from "./views/Projects";
 import { Graph } from "./views/Graph";
 import { Agents } from "./views/Agents";
 import { Settings } from "./views/Settings";
+import { Runtime } from "./views/Runtime";
 import { Toast } from "./components/Toast";
 import { ConfirmModalHost } from "./components/ConfirmModal";
 import { ContextMenuHost } from "./components/ContextMenu";
@@ -75,6 +76,7 @@ export default function App() {
           {view === "projects" && <Projects />}
           {view === "graph" && <Graph />}
           {view === "agents" && <Agents />}
+          {view === "runtime" && <Runtime />}
           {view === "settings" && <Settings />}
         </main>
       </div>

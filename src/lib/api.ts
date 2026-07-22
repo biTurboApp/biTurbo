@@ -13,6 +13,14 @@ import type {
   BootstrapPayload,
   Operation,
   RecallResponse,
+  MemoryCandidate,
+  ObservationSource,
+  CapturePolicy,
+  HealthReport,
+  IntegrityReport,
+  MaintenancePolicy,
+  AcceleratorStatus,
+  RerankerStatus,
 } from "./types";
 
 export interface RememberInput {
@@ -103,6 +111,67 @@ export const api = {
     invoke<void>("submit_recall_feedback", {
       args: { recall_id, memory_uid, value, source },
     }),
+
+  submitObservation: (input: {
+    project_id: string;
+    source_kind: "generic" | "codex" | "claude_code";
+    external_id: string;
+    session_id?: string | null;
+    occurred_at: number;
+    role: string;
+    content: string;
+    metadata?: Record<string, unknown> | null;
+  }) => invoke<{ accepted: boolean; duplicate: boolean; observation_id: string; candidate_ids: string[]; warnings: string[] }>("submit_observation", { input }),
+
+  listMemoryCandidates: (project_id?: string | null, status = "pending") =>
+    invoke<MemoryCandidate[]>("list_memory_candidates", {
+      args: { project_id: project_id ?? null, status, limit: 100, offset: 0 },
+    }),
+  getMemoryCandidate: (candidate_id: string) =>
+    invoke<MemoryCandidate>("get_memory_candidate", { candidateId: candidate_id }),
+  reviewMemoryCandidate: (input: {
+    candidate_id: string;
+    action: "approve" | "edit_and_approve" | "reject" | "merge" | "defer";
+    edited_content?: string | null;
+    target_memory_uid?: string | null;
+    expected_version: number;
+    decided_by?: string | null;
+  }) => invoke<{ candidate: MemoryCandidate; decision_id: string; memory_uid: string | null; operation_id: string | null }>("review_memory_candidate", { input }),
+  getCapturePolicy: (project_id: string) =>
+    invoke<CapturePolicy>("get_capture_policy", { projectId: project_id }),
+  updateCapturePolicy: (policy: CapturePolicy) =>
+    invoke<CapturePolicy>("update_capture_policy", { policy }),
+  listObservationSources: (project_id?: string | null) =>
+    invoke<ObservationSource[]>("list_observation_sources", { projectId: project_id ?? null }),
+  configureObservationSource: (source: ObservationSource) =>
+    invoke<ObservationSource>("configure_observation_source", { source }),
+  sourceStatus: (source_id: string) =>
+    invoke<{ source: ObservationSource; checkpoint: Record<string, unknown> | null }>("source_status", { args: { source_id } }),
+  startSourceSync: (source_id: string) =>
+    invoke<Operation>("start_source_sync", { args: { source_id } }),
+
+  healthReport: () => invoke<HealthReport>("health_report"),
+  startIntegrityCheck: (project_id?: string | null) =>
+    invoke<Operation>("start_integrity_check", { args: { project_id: project_id ?? null } }),
+  integrityReport: (id?: string | null, project_id?: string | null) =>
+    invoke<IntegrityReport | null>("integrity_report", { id: id ?? null, projectId: project_id ?? null }),
+  repairIntegrity: (request: { project_id?: string | null; integrity_run_id: string; issue_ids: string[]; dry_run: boolean }) =>
+    invoke<Operation | Record<string, unknown>>("repair_integrity", { request }),
+  getMaintenancePolicy: (project_id: string) =>
+    invoke<MaintenancePolicy>("get_maintenance_policy", { projectId: project_id }),
+  updateMaintenancePolicy: (policy: MaintenancePolicy) =>
+    invoke<MaintenancePolicy>("update_maintenance_policy", { policy }),
+
+  acceleratorStatus: () => invoke<AcceleratorStatus>("accelerator_status"),
+  getAcceleratorPreference: () => invoke<string>("get_accelerator_preference"),
+  setAcceleratorPreference: (provider: "auto" | "cpu" | "cuda") =>
+    invoke<string>("set_accelerator_preference", { provider }),
+  rerankerStatus: () => invoke<RerankerStatus>("reranker_status"),
+  startRerankerDownload: () => invoke<Operation>("start_reranker_download"),
+  setRerankerEnabled: (enabled: boolean) =>
+    invoke<RerankerStatus>("set_reranker_enabled", { enabled }),
+  importRerankerArtifact: (path: string) =>
+    invoke<RerankerStatus>("import_reranker_artifact", { path }),
 
   listProjects: () => invoke<Project[]>("list_projects"),
   getProject: (id: string) => invoke<Project>("get_project", { id }),

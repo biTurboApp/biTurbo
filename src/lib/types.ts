@@ -36,6 +36,15 @@ export interface RecallExplanation {
   fts_rank: number | null;
   matched_terms: string[];
   feedback_boost: number;
+  reciprocal_rank_contribution?: number;
+  recency_contribution?: number;
+  explicit_feedback_boost?: number;
+  implicit_feedback_boost?: number;
+  staleness_penalty?: number;
+  contradiction_penalty?: number;
+  pre_reranker_score?: number;
+  reranker_applied?: boolean;
+  active_filters?: string[];
 }
 
 export interface ExplainedMemory extends MemoryWithScore {
@@ -194,4 +203,144 @@ export interface GraphData {
   project_id: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
+}
+
+export interface CandidateEvidence {
+  excerpt: string;
+  source_pointer: string | null;
+  source_timestamp: number;
+  evidence_hash: string;
+  extraction_method: string;
+}
+
+export interface MemoryCandidate {
+  id: string;
+  observation_id: string;
+  project_id: string;
+  content: string;
+  mem_type: string;
+  tags: string[];
+  confidence: number;
+  status: string;
+  duplicate_memory_uid: string | null;
+  contradiction_uid: string | null;
+  resulting_memory_uid: string | null;
+  version: number;
+  evidence: CandidateEvidence[];
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ObservationSource {
+  id: string;
+  project_id: string;
+  kind: "generic" | "codex" | "claude_code";
+  name: string;
+  root_path: string | null;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  last_sync_at: number | null;
+  last_error: string | null;
+  processed_count: number;
+  candidate_count: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CapturePolicy {
+  project_id: string;
+  enabled_sources: string[];
+  allowed_categories: string[];
+  extraction_mode: "deterministic" | "ollama";
+  ollama_endpoint: string;
+  ollama_model: string | null;
+  approval_mode: "review_required" | "trusted_categories";
+  auto_approve_categories: string[];
+  evidence_max_chars: number;
+  redaction_mode: string;
+  notify_candidates: boolean;
+  updated_at: number;
+}
+
+export interface IntegrityIssue {
+  id: string;
+  run_id: string;
+  project_id: string | null;
+  severity: string;
+  subsystem: string;
+  issue_kind: string;
+  expected_state: string;
+  actual_state: string;
+  recommended_action: string;
+  safe_automatic: boolean;
+  repaired_at: number | null;
+  created_at: number;
+}
+
+export interface IntegrityReport {
+  id: string;
+  project_id: string | null;
+  trigger_kind: string;
+  status: string;
+  checked_projects: number;
+  issue_count: number;
+  repaired_count: number;
+  deferred_count: number;
+  before_summary: Record<string, unknown>;
+  after_summary: Record<string, unknown> | null;
+  started_at: number;
+  finished_at: number | null;
+  issues: IntegrityIssue[];
+}
+
+export interface HealthReport {
+  status: "healthy" | "degraded" | "critical";
+  checked_at: number;
+  project_count: number;
+  pending_mutations: number;
+  pending_candidates: number;
+  recoverable_operations: number;
+  expired_leases: number;
+  last_integrity_run: IntegrityReport | null;
+}
+
+export interface MaintenancePolicy {
+  project_id: string;
+  enabled: boolean;
+  interval_hours: number;
+  idle_delay_seconds: number;
+  auto_safe_repairs: boolean;
+  last_run_at: number | null;
+  next_run_at: number | null;
+  updated_at: number;
+}
+
+export interface AcceleratorStatus {
+  compiled_providers: string[];
+  requested_provider: string;
+  effective_provider: string;
+  cuda_available: boolean;
+  initialization_error: string | null;
+  onnx_runtime_version: string;
+  model_name: string;
+  model_dimension: number;
+  model_cache_present: boolean;
+  last_inference_provider: string;
+  fallback_count: number;
+  warmup_ms: number;
+  average_batch_ms: number;
+}
+
+export interface RerankerStatus {
+  model_name: string;
+  version: string;
+  license: string;
+  size_bytes: number;
+  sha256: string;
+  installed: boolean;
+  enabled: boolean;
+  loaded: boolean;
+  artifact_path: string;
+  last_error: string | null;
+  last_recall_applied: boolean;
 }

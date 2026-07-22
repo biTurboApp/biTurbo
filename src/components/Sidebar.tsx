@@ -8,6 +8,7 @@ import {
   Check,
   Trash2,
   FileSearch,
+  HeartPulse,
 } from "lucide-react";
 import { useApp, useConfirm, useContextMenu } from "../lib/store";
 import { api } from "../lib/api";
@@ -20,6 +21,7 @@ const nav = [
   { id: "projects", label: "Projects", icon: FolderGit2 },
   { id: "graph", label: "Graph", icon: Share2 },
   { id: "agents", label: "Agents", icon: Bot },
+  { id: "runtime", label: "Runtime", icon: HeartPulse },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
