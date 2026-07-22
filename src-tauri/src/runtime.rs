@@ -4,6 +4,7 @@ use crate::error::{BiError, BiResult};
 use crate::state::AppState;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::sync::mpsc;
 
 static OWNER_ID: Lazy<String> = Lazy::new(|| {
     format!(
@@ -23,6 +24,25 @@ pub struct RuntimeLease {
     pub heartbeat_at: i64,
     pub expires_at: i64,
     pub created_at: i64,
+}
+
+pub struct LeaseGuard {
+    state: AppState,
+    lease_key: String,
+    stop: Option<mpsc::Sender<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for LeaseGuard {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        let _ = release_lease(&self.state, &self.lease_key);
+    }
 }
 
 pub fn owner_id() -> &'static str {
@@ -78,6 +98,44 @@ pub fn claim_lease(
         heartbeat_at: now,
         expires_at,
         created_at: now,
+    })
+}
+
+pub fn claim_guard(
+    state: &AppState,
+    project_id: Option<&str>,
+    task_class: &str,
+    ttl_seconds: u64,
+) -> BiResult<LeaseGuard> {
+    let lease = claim_lease(state, project_id, task_class, ttl_seconds)?;
+    let heartbeat_state = state.clone();
+    let lease_key = lease.lease_key.clone();
+    let heartbeat_key = lease_key.clone();
+    let heartbeat_every = std::time::Duration::from_secs((ttl_seconds / 3).clamp(3, 300));
+    let (stop, receiver) = mpsc::channel();
+    let worker = match std::thread::Builder::new()
+        .name(format!("biturbo-lease-{}", task_class.replace(':', "-")))
+        .spawn(move || loop {
+            match receiver.recv_timeout(heartbeat_every) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if heartbeat(&heartbeat_state, &heartbeat_key, ttl_seconds).is_err() {
+                        break;
+                    }
+                }
+            }
+        }) {
+        Ok(worker) => worker,
+        Err(error) => {
+            let _ = release_lease(state, &lease_key);
+            return Err(BiError::Internal(format!("spawn lease heartbeat: {error}")));
+        }
+    };
+    Ok(LeaseGuard {
+        state: state.clone(),
+        lease_key,
+        stop: Some(stop),
+        worker: Some(worker),
     })
 }
 

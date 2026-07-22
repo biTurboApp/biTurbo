@@ -148,10 +148,8 @@ pub fn run_check(
     if let Some(project_id) = project_id {
         crate::project::get(state, project_id)?;
     }
-    let lease = crate::runtime::claim_lease(state, project_id, "integrity", 300)?;
-    let result = run_check_inner(state, project_id, trigger_kind);
-    let _ = crate::runtime::release_lease(state, &lease.lease_key);
-    result
+    let _lease = crate::runtime::claim_guard(state, project_id, "integrity", 300)?;
+    run_check_inner(state, project_id, trigger_kind)
 }
 
 fn run_check_inner(
@@ -159,6 +157,7 @@ fn run_check_inner(
     project_id: Option<&str>,
     trigger_kind: &str,
 ) -> BiResult<IntegrityReport> {
+    let audit_started = std::time::Instant::now();
     let id = format!("integrity-{}", uuid::Uuid::new_v4());
     let started_at = chrono::Utc::now().timestamp_millis();
     let projects: Vec<String> = {
@@ -192,7 +191,9 @@ fn run_check_inner(
         "projects": projects.len(),
         "issues": issues.len(),
         "safe_automatic": issues.iter().filter(|issue| issue.safe_automatic).count(),
-        "confirmation_required": issues.iter().filter(|issue| !issue.safe_automatic).count()
+        "confirmation_required": issues.iter().filter(|issue| !issue.safe_automatic).count(),
+        "invariants": invariant_summary(state, project_id)?,
+        "timing_ms": {"total": audit_started.elapsed().as_millis() as u64}
     });
     let finished_at = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
@@ -374,6 +375,47 @@ fn inspect_project(
             now,
         ));
     }
+    let invalid_checkpoints: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM source_checkpoints s
+         JOIN observation_sources o ON o.id=s.source_id
+         WHERE o.project_id=?1 AND json_valid(s.cursor)=0",
+        rusqlite::params![project_id],
+        |row| row.get(0),
+    )?;
+    if invalid_checkpoints > 0 {
+        issues.push(issue(
+            run_id,
+            Some(project_id),
+            "error",
+            "capture",
+            "invalid_source_checkpoint",
+            "valid opaque JSON cursor",
+            invalid_checkpoints,
+            "review source and reset checkpoint explicitly",
+            false,
+            now,
+        ));
+    }
+    let project = crate::project::get(state, project_id)?;
+    if project.watch_enabled
+        && !crate::io::watch_status()
+            .watching
+            .iter()
+            .any(|id| id == project_id)
+    {
+        issues.push(issue(
+            run_id,
+            Some(project_id),
+            "warning",
+            "watch",
+            "watch_runtime_mismatch",
+            "watcher active from persisted setting",
+            "watcher inactive",
+            "restore watcher from persisted project settings",
+            true,
+            now,
+        ));
+    }
     Ok(())
 }
 
@@ -403,9 +445,50 @@ fn inspect_global(
             now,
         ));
     }
+    let orphan_feedback: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM recall_feedback f
+         LEFT JOIN memories m ON m.uid=f.memory_uid WHERE m.uid IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    if orphan_feedback > 0 {
+        issues.push(issue(
+            run_id,
+            None,
+            "warning",
+            "recall",
+            "orphan_recall_feedback",
+            0,
+            orphan_feedback,
+            "remove feedback references to missing memories",
+            true,
+            now,
+        ));
+    }
+    let broken_models: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM model_artifacts
+         WHERE enabled=1 AND (status!='ready' OR path IS NULL)",
+        [],
+        |row| row.get(0),
+    )?;
+    if broken_models > 0 {
+        issues.push(issue(
+            run_id,
+            None,
+            "error",
+            "models",
+            "active_model_artifact_missing",
+            "enabled model artifact is ready and locally present",
+            broken_models,
+            "reinstall or explicitly disable the model artifact",
+            false,
+            now,
+        ));
+    }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn issue(
     run_id: &str,
     project_id: Option<&str>,
@@ -500,14 +583,15 @@ pub fn repair(state: &AppState, request: RepairRequest) -> BiResult<RepairPlan> 
     }
     let finished_at = chrono::Utc::now().timestamp_millis();
     let result = serde_json::json!({"repaired": repaired, "actions": actions});
+    let after_summary = invariant_summary(state, request.project_id.as_deref())?;
     state.db.write(|tx| {
         tx.execute(
             "UPDATE repair_runs SET status='succeeded', result=?1, finished_at=?2 WHERE id=?3",
             rusqlite::params![result.to_string(), finished_at, id],
         )?;
         tx.execute(
-            "UPDATE integrity_runs SET repaired_count = repaired_count + ?1 WHERE id=?2",
-            rusqlite::params![repaired as i64, request.integrity_run_id],
+            "UPDATE integrity_runs SET repaired_count = repaired_count + ?1, after_summary=?2 WHERE id=?3",
+            rusqlite::params![repaired as i64, after_summary.to_string(), request.integrity_run_id],
         )?;
         Ok(())
     })?;
@@ -563,8 +647,60 @@ fn apply_safe_repair(state: &AppState, issue: &IntegrityIssue) -> BiResult<()> {
             crate::runtime::cleanup_expired_leases(state)?;
             Ok(())
         }
+        "orphan_recall_feedback" => state.db.write(|tx| {
+            tx.execute(
+                "DELETE FROM recall_feedback WHERE memory_uid NOT IN (SELECT uid FROM memories)",
+                [],
+            )?;
+            Ok(())
+        }),
+        "watch_runtime_mismatch" => {
+            crate::io::resume_watches(state);
+            Ok(())
+        }
         other => Err(BiError::Invalid(format!("issue {other} is not automatically repairable"))),
     }
+}
+
+fn invariant_summary(state: &AppState, project_id: Option<&str>) -> BiResult<serde_json::Value> {
+    let conn = state.db.conn()?;
+    let (memories, fts, pending_journal, candidates, generation): (i64, i64, i64, i64, i64) =
+        if let Some(project_id) = project_id {
+            (
+                conn.query_row("SELECT COUNT(*) FROM memories WHERE project_id=?1", [project_id], |row| row.get(0))?,
+                conn.query_row("SELECT COUNT(*) FROM memories_fts WHERE project_id=?1", [project_id], |row| row.get(0))?,
+                conn.query_row("SELECT COUNT(*) FROM index_mutations WHERE project_id=?1 AND applied_at IS NULL", [project_id], |row| row.get(0))?,
+                conn.query_row("SELECT COUNT(*) FROM memory_candidates WHERE project_id=?1 AND status='pending'", [project_id], |row| row.get(0))?,
+                conn.query_row("SELECT COALESCE(MAX(id),0) FROM index_mutations WHERE project_id=?1", [project_id], |row| row.get(0))?,
+            )
+        } else {
+            (
+                conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?,
+                conn.query_row("SELECT COUNT(*) FROM memories_fts", [], |row| row.get(0))?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM index_mutations WHERE applied_at IS NULL",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM memory_candidates WHERE status='pending'",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COALESCE(MAX(id),0) FROM index_mutations",
+                    [],
+                    |row| row.get(0),
+                )?,
+            )
+        };
+    Ok(serde_json::json!({
+        "memories": memories,
+        "fts_rows": fts,
+        "pending_journal": pending_journal,
+        "pending_candidates": candidates,
+        "index_generation": generation
+    }))
 }
 
 pub fn latest_report(

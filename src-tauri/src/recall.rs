@@ -96,7 +96,7 @@ pub fn explain(
         .enumerate()
         .map(|(rank, (uid, _))| (uid.as_str(), rank + 1))
         .collect();
-    let boosts = feedback_boosts(
+    let boosts = feedback_boost_components(
         state,
         &hits
             .iter()
@@ -137,7 +137,7 @@ pub fn explain(
                 + fts_rank
                     .map(|rank| 1.0 / (60.0 + rank as f32))
                     .unwrap_or(0.0);
-            let feedback = boosts.get(&uid).copied().unwrap_or(0.0);
+            let feedback = boosts.get(&uid).copied().unwrap_or_default();
             let staleness_penalty = stale_penalty(&hit.memory);
             let contradiction_penalty = if contradicted_uids.contains(&uid) {
                 0.015
@@ -150,15 +150,16 @@ pub fn explain(
                     vector_rank,
                     fts_rank,
                     matched_terms,
-                    feedback_boost: feedback,
+                    feedback_boost: feedback.total,
                     applied_boosts,
                     reciprocal_rank_contribution,
                     recency_contribution: (1.0 - staleness_penalty / 0.02).max(0.0) * 0.005,
-                    explicit_feedback_boost: feedback,
-                    implicit_feedback_boost: 0.0,
+                    explicit_feedback_boost: feedback.explicit,
+                    implicit_feedback_boost: feedback.implicit,
                     staleness_penalty,
                     contradiction_penalty,
-                    pre_reranker_score: hit.score + staleness_penalty + contradiction_penalty,
+                    pre_reranker_score: crate::reranker::last_pre_score(query, &uid)
+                        .unwrap_or(hit.score),
                     reranker_applied,
                     active_filters: mem_type
                         .map(|value| vec![format!("mem_type:{value}")])
@@ -345,6 +346,23 @@ pub fn submit_feedback(
 }
 
 pub fn feedback_boosts(state: &AppState, uids: &[String]) -> BiResult<HashMap<String, f32>> {
+    Ok(feedback_boost_components(state, uids)?
+        .into_iter()
+        .map(|(uid, boost)| (uid, boost.total))
+        .collect())
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FeedbackBoost {
+    explicit: f32,
+    implicit: f32,
+    total: f32,
+}
+
+fn feedback_boost_components(
+    state: &AppState,
+    uids: &[String],
+) -> BiResult<HashMap<String, FeedbackBoost>> {
     if uids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -353,15 +371,24 @@ pub fn feedback_boosts(state: &AppState, uids: &[String]) -> BiResult<HashMap<St
         .join(",");
     let sql = format!(
         "SELECT memory_uid,
-                COALESCE(SUM(CASE WHEN source = 'explicit' THEN value * 4 ELSE value END), 0)
+                COALESCE(SUM(CASE WHEN source = 'explicit' THEN value ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN source = 'implicit' THEN value ELSE 0 END), 0)
          FROM recall_feedback WHERE memory_uid IN ({placeholders}) GROUP BY memory_uid"
     );
     let conn = state.db.conn()?;
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(uids), |r| {
         let uid: String = r.get(0)?;
-        let weighted: f32 = r.get::<_, f64>(1)? as f32;
-        Ok((uid, (weighted * 0.0025).clamp(-0.02, 0.02)))
+        let explicit = (r.get::<_, f64>(1)? as f32 * 0.01).clamp(-0.02, 0.02);
+        let implicit = (r.get::<_, f64>(2)? as f32 * 0.0025).clamp(-0.01, 0.01);
+        Ok((
+            uid,
+            FeedbackBoost {
+                explicit,
+                implicit,
+                total: (explicit + implicit).clamp(-0.02, 0.02),
+            },
+        ))
     })?;
     Ok(rows.filter_map(Result::ok).collect())
 }

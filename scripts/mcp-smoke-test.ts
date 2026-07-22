@@ -401,8 +401,8 @@ const tests: TestCase[] = [
     }),
     skip: () => !CANDIDATE_HOLDER.id,
     expect: (r) => {
-      const j = extractJson(r) as { memory_uid?: string } | null;
-      return isNonEmptyString(j?.memory_uid) || "candidate was not activated";
+      const j = extractJson(r) as { memory_id?: string } | null;
+      return isNonEmptyString(j?.memory_id) || "candidate was not activated";
     },
   },
   {

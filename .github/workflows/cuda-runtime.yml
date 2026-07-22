@@ -24,12 +24,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - run: node scripts/ensure-sidecar-placeholder.mjs
       - name: Build CUDA MCP artifact
         run: cargo build --manifest-path src-tauri/Cargo.toml --release --features cuda --bin biturbo-mcp
       - name: Runtime smoke test
         env:
           BITURBO_EMBED_EP: cuda
-        run: cargo test --manifest-path src-tauri/Cargo.toml --features cuda embed::tests -- --nocapture
+        run: cargo test --manifest-path src-tauri/Cargo.toml --features cuda embed::cuda_tests::cuda_embedding_smoke -- --exact --nocapture
       - name: Package CUDA MCP binary
         run: tar -C src-tauri/target/release -czf biturbo-mcp-linux-x64-cuda.tar.gz biturbo-mcp
       - uses: actions/upload-artifact@v4

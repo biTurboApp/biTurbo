@@ -226,6 +226,9 @@ export interface MemoryCandidate {
   contradiction_uid: string | null;
   resulting_memory_uid: string | null;
   version: number;
+  source_kind: string;
+  source_id: string | null;
+  source_timestamp: number;
   evidence: CandidateEvidence[];
   created_at: number;
   updated_at: number;

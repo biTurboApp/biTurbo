@@ -3,16 +3,15 @@
 //! Architecture
 //! ────────────
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │  Tauri 2 desktop app  (this crate)                          │
-//! │   ├── commands::*        — IPC handlers (GUI ↔ backend)     │
-//! │   ├── mcp                 — MCP stdio server for AI agents   │
-//! │   ├── memory             — CRUD over memory entries         │
-//! │   ├── project            — multi-project isolation          │
-//! │   ├── index_engine       — turbovec IdMapIndex wrapper      │
-//! │   ├── embed              — fastembed (BGE) embeddings       │
-//! │   ├── ingest             — tree-sitter project indexing     │
-//! │   ├── consolidate        — decay / dedup / merge            │
-//! │   └── db                 — SQLite schema + connection pool  │
+//! │  Thin adapters: Tauri commands │ MCP stdio                   │
+//! │                 └────────┬────────┘                           │
+//! │  Shared runtime          │                                    │
+//! │   ├── application / operations / runtime leases              │
+//! │   ├── capture / sources / candidate decisions                │
+//! │   ├── integrity / maintenance / safe repair                  │
+//! │   ├── memory / recall / reranker / accelerator               │
+//! │   ├── ingest / consolidate / project                         │
+//! │   └── persistence / db / FTS / turbovec journal              │
 //! └─────────────────────────────────────────────────────────────┘
 //!
 //! Data lives in the OS app-data dir (~/Library/Application Support/com.biturbo.app/

@@ -45,6 +45,9 @@ pub struct MemoryCandidate {
     pub contradiction_uid: Option<String>,
     pub resulting_memory_uid: Option<String>,
     pub version: i64,
+    pub source_kind: String,
+    pub source_id: Option<String>,
+    pub source_timestamp: i64,
     pub evidence: Vec<CandidateEvidence>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -64,6 +67,7 @@ pub struct CandidateDecisionInput {
     pub candidate_id: String,
     pub action: String,
     pub edited_content: Option<String>,
+    #[serde(rename = "target_memory_id", alias = "target_memory_uid")]
     pub target_memory_uid: Option<String>,
     pub expected_version: i64,
     pub decided_by: Option<String>,
@@ -72,9 +76,22 @@ pub struct CandidateDecisionInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandidateDecisionResult {
     pub candidate: MemoryCandidate,
-    pub decision_id: String,
-    pub memory_uid: Option<String>,
+    pub decision: CandidateDecision,
+    pub memory_id: Option<String>,
     pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateDecision {
+    pub id: String,
+    pub candidate_id: String,
+    pub action: String,
+    pub decided_by: Option<String>,
+    pub edited_content: Option<String>,
+    pub target_memory_id: Option<String>,
+    pub memory_id: Option<String>,
+    pub expected_version: i64,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +152,16 @@ pub fn submit_observation(
         return Err(BiError::Invalid(format!(
             "observation exceeds {MAX_OBSERVATION_BYTES} bytes"
         )));
+    }
+    if input.source_kind == "generic" {
+        let conn = state.db.conn()?;
+        let registered: i64 =
+            conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
+        if registered == 0 {
+            return Err(BiError::Invalid(
+                "generic observation intake requires a registered local agent".into(),
+            ));
+        }
     }
     let content_hash = hash_text(&input.content);
     if let Some((observation_id, prior_hash)) = find_receipt(
@@ -211,8 +238,6 @@ pub fn submit_observation(
         .and_then(|value| value.get("source_id"))
         .and_then(serde_json::Value::as_str)
         .map(String::from);
-    let evidence_excerpt = bounded_chars(&redacted, policy.evidence_max_chars);
-    let evidence_hash = hash_text(&evidence_excerpt);
     let mut candidate_ids = Vec::with_capacity(extracted.len());
 
     state.db.write(|tx| {
@@ -235,6 +260,8 @@ pub fn submit_observation(
             ],
         )?;
         for extracted in &extracted {
+            let evidence_excerpt = bounded_chars(&extracted.content, policy.evidence_max_chars);
+            let evidence_hash = hash_text(&evidence_excerpt);
             let candidate_id = format!("candidate-{}", uuid::Uuid::new_v4());
             let exact_duplicate: Option<String> = tx
                 .query_row(
@@ -291,6 +318,31 @@ pub fn submit_observation(
             "UPDATE observations SET candidate_count = ?1 WHERE id = ?2",
             rusqlite::params![candidate_ids.len() as i64, observation_id],
         )?;
+        if let Some(source_id) = &source_id {
+            tx.execute(
+                "UPDATE observation_sources SET processed_count=processed_count+1,
+                     candidate_count=candidate_count+?1, updated_at=?2 WHERE id=?3",
+                rusqlite::params![candidate_ids.len() as i64, now, source_id],
+            )?;
+            if let Some(cursor) = input
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("source_checkpoint"))
+            {
+                let identity = input
+                    .metadata
+                    .as_ref()
+                    .and_then(|value| value.get("source_checkpoint_identity"))
+                    .and_then(serde_json::Value::as_str);
+                tx.execute(
+                    "INSERT INTO source_checkpoints(source_id, cursor, content_identity, updated_at)
+                     VALUES(?1,?2,?3,?4)
+                     ON CONFLICT(source_id) DO UPDATE SET cursor=excluded.cursor,
+                         content_identity=excluded.content_identity, updated_at=excluded.updated_at",
+                    rusqlite::params![source_id, cursor.to_string(), identity, now],
+                )?;
+            }
+        }
         log_activity(
             tx,
             Some(&input.project_id),
@@ -380,6 +432,7 @@ pub fn list_candidates(
     let mut candidates: Vec<MemoryCandidate> = rows.filter_map(Result::ok).collect();
     for candidate in &mut candidates {
         candidate.evidence = evidence_for(&conn, &candidate.id)?;
+        hydrate_candidate_source(&conn, candidate)?;
     }
     Ok(candidates)
 }
@@ -397,6 +450,7 @@ pub fn get_candidate(state: &AppState, id: &str) -> BiResult<MemoryCandidate> {
         .optional()?
         .ok_or_else(|| BiError::NotFound(format!("candidate {id}")))?;
     candidate.evidence = evidence_for(&conn, id)?;
+    hydrate_candidate_source(&conn, &mut candidate)?;
     Ok(candidate)
 }
 
@@ -411,24 +465,25 @@ pub fn review_candidate(
         return Err(BiError::Invalid("unknown candidate decision".into()));
     }
     let candidate = get_candidate(state, &input.candidate_id)?;
-    if candidate.status != "pending" {
-        let conn = state.db.conn()?;
-        let prior: Option<(String, Option<String>)> = conn
-            .query_row(
-                "SELECT id, resulting_memory_uid FROM candidate_decisions
-                 WHERE candidate_id = ?1 AND expected_version = ?2",
-                rusqlite::params![input.candidate_id, input.expected_version],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        if let Some((decision_id, memory_uid)) = prior {
+    if let Some(decision) =
+        decision_for_version(state, &input.candidate_id, input.expected_version)?
+    {
+        if decision.action == input.action
+            && decision.edited_content == input.edited_content
+            && decision.target_memory_id == input.target_memory_uid
+        {
             return Ok(CandidateDecisionResult {
                 candidate,
-                decision_id,
-                memory_uid,
+                memory_id: decision.memory_id.clone(),
+                decision,
                 operation_id: None,
             });
         }
+        return Err(BiError::Invalid(
+            "candidate version already has a different decision".into(),
+        ));
+    }
+    if candidate.status != "pending" {
         return Err(BiError::Invalid("candidate is no longer pending".into()));
     }
     if candidate.version != input.expected_version {
@@ -556,10 +611,40 @@ pub fn review_candidate(
     }
     Ok(CandidateDecisionResult {
         candidate: get_candidate(state, &input.candidate_id)?,
-        decision_id,
-        memory_uid,
+        decision: decision_for_version(state, &input.candidate_id, input.expected_version)?
+            .ok_or_else(|| BiError::Internal("candidate decision missing after commit".into()))?,
+        memory_id: memory_uid,
         operation_id: None,
     })
+}
+
+fn decision_for_version(
+    state: &AppState,
+    candidate_id: &str,
+    expected_version: i64,
+) -> BiResult<Option<CandidateDecision>> {
+    let conn = state.db.conn()?;
+    Ok(conn
+        .query_row(
+            "SELECT id, candidate_id, action, decided_by, edited_content, target_memory_uid,
+                    resulting_memory_uid, expected_version, created_at
+             FROM candidate_decisions WHERE candidate_id=?1 AND expected_version=?2",
+            rusqlite::params![candidate_id, expected_version],
+            |row| {
+                Ok(CandidateDecision {
+                    id: row.get(0)?,
+                    candidate_id: row.get(1)?,
+                    action: row.get(2)?,
+                    decided_by: row.get(3)?,
+                    edited_content: row.get(4)?,
+                    target_memory_id: row.get(5)?,
+                    memory_id: row.get(6)?,
+                    expected_version: row.get(7)?,
+                    created_at: row.get(8)?,
+                })
+            },
+        )
+        .optional()?)
 }
 
 pub fn get_capture_policy(state: &AppState, project_id: &str) -> BiResult<CapturePolicy> {
@@ -833,7 +918,7 @@ fn extract_deterministic(
         return Vec::new();
     }
     vec![ExtractedCandidate {
-        content: bounded_chars(&durable_sentence(&normalized), 600),
+        content: bounded_chars(&durable_sentence(&normalized), 280),
         mem_type: mem_type.into(),
         tags: vec![tag.into(), "automatic-capture".into()],
         confidence,
@@ -866,7 +951,7 @@ fn durable_sentence(value: &str) -> String {
         "ablauf",
     ];
     value
-        .split(|character| matches!(character, '.' | '!' | '?' | '\n'))
+        .split(['.', '!', '?', '\n'])
         .map(str::trim)
         .find(|sentence| {
             let lower = sentence.to_lowercase();
@@ -1120,10 +1205,28 @@ fn row_to_candidate_base(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryCand
         contradiction_uid: row.get(9)?,
         resulting_memory_uid: row.get(10)?,
         version: row.get(11)?,
+        source_kind: String::new(),
+        source_id: None,
+        source_timestamp: 0,
         evidence: Vec::new(),
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
     })
+}
+
+fn hydrate_candidate_source(
+    conn: &rusqlite::Connection,
+    candidate: &mut MemoryCandidate,
+) -> BiResult<()> {
+    let (source_kind, source_id, occurred_at): (String, Option<String>, i64) = conn.query_row(
+        "SELECT source_kind, source_id, occurred_at FROM observations WHERE id=?1",
+        rusqlite::params![candidate.observation_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    candidate.source_kind = source_kind;
+    candidate.source_id = source_id;
+    candidate.source_timestamp = occurred_at;
+    Ok(())
 }
 
 fn row_to_capture_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<CapturePolicy> {
@@ -1183,7 +1286,10 @@ mod tests {
     fn state() -> AppState {
         let dir =
             std::env::temp_dir().join(format!("biturbo-capture-test-{}", uuid::Uuid::new_v4()));
-        AppState::open(&dir).unwrap()
+        let state = AppState::open(&dir).unwrap();
+        crate::application::register_agent(&state, "capture-test".into(), "test".into(), None)
+            .unwrap();
+        state
     }
 
     #[test]
@@ -1255,7 +1361,7 @@ mod tests {
         .unwrap();
         assert_eq!(decision.candidate.status, "approved");
         assert!(
-            crate::memory::get(&state, decision.memory_uid.as_deref().unwrap())
+            crate::memory::get(&state, decision.memory_id.as_deref().unwrap())
                 .unwrap()
                 .is_some()
         );
@@ -1271,7 +1377,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(replay.memory_uid, decision.memory_uid);
+        assert_eq!(replay.memory_id, decision.memory_id);
     }
 
     #[test]
@@ -1279,7 +1385,7 @@ mod tests {
         let state = state();
         let unique_tail = format!("RAW-TRANSCRIPT-TAIL-{}", uuid::Uuid::new_v4());
         let content = format!(
-            "We decided to keep SQLite authoritative. {} {unique_tail}",
+            "We decided to keep SQLite authoritative {} {unique_tail}",
             "transient conversation filler ".repeat(80)
         );
         submit_observation(
@@ -1357,5 +1463,36 @@ mod tests {
                 "pending"
             );
         }
+    }
+
+    #[test]
+    fn defer_retry_is_idempotent() {
+        let state = state();
+        let result = submit_observation(
+            &state,
+            SubmitObservationInput {
+                project_id: "default".into(),
+                source_kind: "generic".into(),
+                external_id: "defer-once".into(),
+                session_id: None,
+                occurred_at: 1,
+                role: "user".into(),
+                content: "We decided to defer this candidate review.".into(),
+                metadata: None,
+            },
+        )
+        .unwrap();
+        let input = CandidateDecisionInput {
+            candidate_id: result.candidate_ids[0].clone(),
+            action: "defer".into(),
+            edited_content: None,
+            target_memory_uid: None,
+            expected_version: 1,
+            decided_by: Some("test".into()),
+        };
+        let first = review_candidate(&state, input.clone()).unwrap();
+        let retry = review_candidate(&state, input).unwrap();
+        assert_eq!(first.decision.id, retry.decision.id);
+        assert_eq!(retry.candidate.status, "pending");
     }
 }

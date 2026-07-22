@@ -73,9 +73,9 @@ For the desktop app you also need the [Tauri 2 prerequisites](https://tauri.app/
 The normal build remains CPU-only. A separate Linux x86-64 build can enable the ONNX Runtime CUDA provider:
 
 ```bash
-npm run cuda:check             # compile the CUDA feature without requiring a GPU
-npm run mcp:build:cuda         # build the CUDA-capable MCP binary
-npm run tauri:run:wsl:cuda     # WSL2 development runner
+pnpm cuda:check             # compile the CUDA feature without requiring a GPU
+pnpm mcp:build:cuda         # build the CUDA-capable MCP binary
+pnpm tauri:run:wsl:cuda     # WSL2 development runner
 ```
 
 Set `BITURBO_EMBED_EP=auto|cpu|cuda`, or use Runtime → Models and acceleration. `auto` falls back to CPU with a visible reason; `cuda` fails with a structured error when the NVIDIA runtime is unavailable. Switching providers does not change model identity and does not rebuild indexes.

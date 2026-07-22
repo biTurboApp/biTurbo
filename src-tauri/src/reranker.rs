@@ -11,6 +11,7 @@ use ort::execution_providers::{CPUExecutionProvider, ExecutionProviderDispatch};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
 
@@ -33,6 +34,8 @@ const FILES: &[&str] = &[
 static MODEL: Lazy<Mutex<Option<Arc<TextRerank>>>> = Lazy::new(|| Mutex::new(None));
 static LAST_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static LAST_APPLIED: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+static LAST_PRE_SCORES: Lazy<Mutex<(String, HashMap<String, f32>)>> =
+    Lazy::new(|| Mutex::new((String::new(), HashMap::new())));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerankerStatus {
@@ -223,13 +226,25 @@ pub fn rerank_if_enabled(
         }
     };
     let count = hits.len().min(50);
+    *LAST_PRE_SCORES.lock() = (
+        hash_query(query),
+        hits.iter()
+            .take(count)
+            .map(|hit| (hit.memory.uid.clone(), hit.score))
+            .collect(),
+    );
     let documents: Vec<String> = hits
         .iter()
         .take(count)
         .map(|hit| hit.memory.content.clone())
         .collect();
-    match model.rerank(query.to_string(), documents, false, Some(8)) {
-        Ok(results) => {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let query = query.to_string();
+    std::thread::spawn(move || {
+        let _ = sender.send(model.rerank(query, documents, false, Some(8)));
+    });
+    match receiver.recv_timeout(std::time::Duration::from_secs(2)) {
+        Ok(Ok(results)) => {
             let original = hits[..count].to_vec();
             let mut reranked = Vec::with_capacity(hits.len());
             for result in results {
@@ -243,11 +258,28 @@ pub fn rerank_if_enabled(
             *LAST_ERROR.lock() = None;
             reranked
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             *LAST_ERROR.lock() = Some(error.to_string());
             hits
         }
+        Err(_) => {
+            *LAST_ERROR.lock() = Some("reranker inference timed out after 2 seconds".into());
+            hits
+        }
     }
+}
+
+pub fn last_pre_score(query: &str, uid: &str) -> Option<f32> {
+    let scores = LAST_PRE_SCORES.lock();
+    (scores.0 == hash_query(query))
+        .then(|| scores.1.get(uid).copied())
+        .flatten()
+}
+
+fn hash_query(query: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(query.trim().as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 fn load_model(state: &AppState) -> BiResult<Arc<TextRerank>> {

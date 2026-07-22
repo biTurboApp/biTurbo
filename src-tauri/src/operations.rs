@@ -209,22 +209,22 @@ pub fn start_source_sync(state: &AppState, source_id: &str) -> BiResult<Operatio
 fn execute_source_sync(state: &AppState, operation_id: &str, source_id: &str) -> BiResult<()> {
     let source = crate::sources::get_source(state, source_id)?;
     let task_class = format!("source_sync:{source_id}");
-    let lease = loop {
-        match crate::runtime::claim_lease(state, Some(&source.project_id), &task_class, 300) {
+    let _lease = loop {
+        match crate::runtime::claim_guard(state, Some(&source.project_id), &task_class, 300) {
             Ok(lease) => break lease,
-            Err(_) => {
+            Err(BiError::Invalid(message)) if message.contains("already owned") => {
                 if is_cancel_requested(state, operation_id)? {
                     return mark_cancelled(state, operation_id);
                 }
                 update_progress(state, operation_id, "queued_rerun", 0, 1, None)?;
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
+            Err(error) => return Err(error),
         }
     };
     mark_running(state, operation_id)?;
     update_progress(state, operation_id, "discovering_transcripts", 0, 1, None)?;
     let result = crate::sources::sync_source(state, source_id, Some(operation_id));
-    let _ = crate::runtime::release_lease(state, &lease.lease_key);
     complete(state, operation_id, &serde_json::to_value(result?)?)
 }
 
@@ -777,6 +777,7 @@ fn execute_multi_ingest(
             mark_cancelled(state, id)?;
             return Err(BiError::Ingest("operation cancelled".into()));
         }
+        let _lease = crate::runtime::claim_guard(state, Some(&project_id), "ingest", 300)?;
         update_progress(state, id, "ingesting", position, total, None)?;
         match crate::ingest::ingest_project_controlled(state, &project_id, &root, Some(id)) {
             Ok(result) => {
@@ -820,6 +821,7 @@ fn execute_consolidate(
     project_id: Option<&str>,
 ) -> BiResult<crate::consolidate::ConsolidateReport> {
     let _operation_lock = lock_operation(state, id)?;
+    let _lease = crate::runtime::claim_guard(state, project_id, "consolidate", 300)?;
     mark_running(state, id)?;
     update_progress(state, id, "consolidating", 0, 1, None)?;
     if is_cancel_requested(state, id)? {
@@ -852,6 +854,7 @@ fn execute_model_rebuild(
     requested_model: Option<&str>,
 ) -> BiResult<crate::project::Project> {
     let _operation_lock = lock_operation(state, id)?;
+    let _lease = crate::runtime::claim_guard(state, Some(project_id), "model_rebuild", 300)?;
     mark_running(state, id)?;
     let result = (|| -> BiResult<crate::project::Project> {
         state.replay_index_mutations(project_id)?;
@@ -1032,6 +1035,7 @@ fn execute_ingest(
     root: &Path,
 ) -> BiResult<crate::ingest::IngestResult> {
     let _operation_lock = lock_operation(state, id)?;
+    let _lease = crate::runtime::claim_guard(state, Some(project_id), "ingest", 300)?;
     mark_running(state, id)?;
     let started = std::time::Instant::now();
     let outcome = crate::ingest::ingest_project_controlled(state, project_id, root, Some(id));

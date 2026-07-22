@@ -133,10 +133,10 @@ export const api = {
     candidate_id: string;
     action: "approve" | "edit_and_approve" | "reject" | "merge" | "defer";
     edited_content?: string | null;
-    target_memory_uid?: string | null;
+    target_memory_id?: string | null;
     expected_version: number;
     decided_by?: string | null;
-  }) => invoke<{ candidate: MemoryCandidate; decision_id: string; memory_uid: string | null; operation_id: string | null }>("review_memory_candidate", { input }),
+  }) => invoke<{ candidate: MemoryCandidate; decision: { id: string; action: string; expected_version: number }; memory_id: string | null; operation_id: string | null }>("review_memory_candidate", { input }),
   getCapturePolicy: (project_id: string) =>
     invoke<CapturePolicy>("get_capture_policy", { projectId: project_id }),
   updateCapturePolicy: (policy: CapturePolicy) =>

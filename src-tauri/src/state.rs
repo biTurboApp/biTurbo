@@ -89,6 +89,7 @@ impl AppState {
         state.refresh_indices()?;
         state.replay_all_index_mutations()?;
         crate::operations::recover_interrupted(&state)?;
+        crate::io::resume_watches(&state);
 
         // Debounced index flusher + LRU evictor. A plain thread (not tokio)
         // so it runs in every consumer of AppState.

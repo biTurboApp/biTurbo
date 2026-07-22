@@ -62,7 +62,13 @@ fn prepare_database(db_path: &Path) -> BiResult<()> {
     let existed = db_path.exists() && std::fs::metadata(db_path).is_ok_and(|m| m.len() > 0);
     let mut conn = rusqlite::Connection::open(db_path)?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version >= CURRENT_SCHEMA_VERSION {
+    if version > CURRENT_SCHEMA_VERSION {
+        fs2::FileExt::unlock(&lock)?;
+        return Err(crate::error::BiError::Db(format!(
+            "database schema version {version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
+        )));
+    }
+    if version == CURRENT_SCHEMA_VERSION {
         fs2::FileExt::unlock(&lock)?;
         return Ok(());
     }
@@ -930,6 +936,17 @@ mod migration_tests {
             .unwrap();
         assert_eq!(marker, "survives");
         assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn future_schema_version_is_rejected() {
+        let db_path = temp_db();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION + 1)
+            .unwrap();
+        drop(conn);
+        let error = Db::open(&db_path).err().expect("future schema must fail");
+        assert!(error.to_string().contains("newer than supported"));
     }
 }
 

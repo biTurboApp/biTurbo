@@ -6,7 +6,21 @@ use crate::state::AppState;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::BufRead;
+use std::collections::BTreeMap;
+use std::io::{BufRead, Read, Seek, SeekFrom};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AdapterCursor {
+    version: u8,
+    files: BTreeMap<String, FileCursor>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct FileCursor {
+    offset: u64,
+    line: usize,
+    prefix_hash: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceSyncResult {
@@ -67,6 +81,8 @@ pub fn sync_source(
         duplicates: 0,
         warnings: Vec::new(),
     };
+    let mut cursor = load_adapter_cursor(state, &source.id)?;
+    cursor.version = 1;
     let total_bytes: u64 = files
         .iter()
         .filter_map(|path| std::fs::metadata(path).ok())
@@ -79,22 +95,44 @@ pub fn sync_source(
         {
             return Err(BiError::Invalid("source sync cancelled".into()));
         }
-        let file = std::fs::File::open(path)?;
         let relative = path.strip_prefix(root).unwrap_or(path);
-        for (line_index, line) in std::io::BufReader::new(file).lines().enumerate() {
-            let line = match line {
-                Ok(line) => line,
+        let relative_key = relative.to_string_lossy().to_string();
+        let prior = cursor.files.get(&relative_key).cloned().unwrap_or_default();
+        let (start, start_line, mut prefix_hasher) = resume_position(path, &prior)?;
+        let mut file = std::fs::File::open(path)?;
+        file.seek(SeekFrom::Start(start))?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut offset = start;
+        let mut line_number = start_line;
+        consumed = consumed.saturating_add(start);
+        loop {
+            let mut line = String::new();
+            let bytes = match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(bytes) => bytes,
                 Err(error) => {
                     result.warnings.push(format!(
                         "{}:{}: {error}",
                         relative.display(),
-                        line_index + 1
+                        line_number + 1
                     ));
-                    continue;
+                    break;
                 }
             };
-            consumed = consumed.saturating_add(line.len() as u64 + 1);
-            let value: serde_json::Value = match serde_json::from_str(&line) {
+            offset += bytes as u64;
+            line_number += 1;
+            consumed = consumed.saturating_add(bytes as u64);
+            prefix_hasher.update(line.as_bytes());
+            cursor.files.insert(
+                relative_key.clone(),
+                FileCursor {
+                    offset,
+                    line: line_number,
+                    prefix_hash: hex::encode(prefix_hasher.clone().finalize()),
+                },
+            );
+            let line = line.trim_end_matches(['\r', '\n']);
+            let value: serde_json::Value = match serde_json::from_str(line) {
                 Ok(value) => value,
                 Err(_) => continue,
             };
@@ -104,14 +142,11 @@ pub fn sync_source(
             if content.trim().is_empty() {
                 continue;
             }
-            let hash = hash_text(&content);
-            let external_id = format!(
-                "{}:{}:{}:{}",
-                source.kind,
-                relative.to_string_lossy(),
-                line_index + 1,
-                &hash[..16]
-            );
+            let event_id = extract_string(&value, &["external_id", "event_id", "eventId", "id"])
+                .unwrap_or_else(|| hash_text(&value.to_string()));
+            let external_id = format!("{}:{}:{}", source.kind, relative_key, event_id);
+            let checkpoint_value = serde_json::to_value(&cursor)?;
+            let checkpoint_identity = hash_text(&checkpoint_value.to_string());
             let sync = crate::capture::submit_observation(
                 state,
                 SubmitObservationInput {
@@ -128,7 +163,9 @@ pub fn sync_source(
                     content,
                     metadata: Some(serde_json::json!({
                         "source_id": source.id,
-                        "source_pointer": format!("{}:{}", path.display(), line_index + 1)
+                        "source_pointer": format!("{}:{}", path.display(), line_number),
+                        "source_checkpoint": checkpoint_value,
+                        "source_checkpoint_identity": checkpoint_identity
                     })),
                 },
             )?;
@@ -149,32 +186,30 @@ pub fn sync_source(
                     Some(&serde_json::json!({
                         "source_id": source.id,
                         "file": relative,
-                        "line": line_index + 1
+                        "line": line_number
                     })),
                 )?;
             }
         }
     }
     let now = chrono::Utc::now().timestamp_millis();
-    let checkpoint = source_identity(&files)?;
+    cursor
+        .files
+        .retain(|relative, _| root.join(relative).is_file());
+    let checkpoint = serde_json::to_string(&cursor)?;
+    let identity = hash_text(&checkpoint);
     state.db.write(|tx| {
         tx.execute(
             "INSERT INTO source_checkpoints(source_id, cursor, content_identity, updated_at)
-             VALUES(?1,?2,?2,?3)
+             VALUES(?1,?2,?3,?4)
              ON CONFLICT(source_id) DO UPDATE SET cursor=excluded.cursor,
                  content_identity=excluded.content_identity, updated_at=excluded.updated_at",
-            rusqlite::params![source.id, checkpoint, now],
+            rusqlite::params![source.id, checkpoint, identity, now],
         )?;
         tx.execute(
             "UPDATE observation_sources SET last_sync_at=?1, last_error=NULL,
-                 processed_count=processed_count+?2, candidate_count=candidate_count+?3,
-                 updated_at=?1 WHERE id=?4",
-            rusqlite::params![
-                now,
-                result.observations_processed as i64,
-                result.candidates_created as i64,
-                source.id
-            ],
+                 updated_at=?1 WHERE id=?2",
+            rusqlite::params![now, source.id],
         )?;
         Ok(())
     })?;
@@ -280,20 +315,42 @@ fn extract_timestamp(value: &serde_json::Value) -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-fn source_identity(files: &[std::path::PathBuf]) -> BiResult<String> {
-    let mut hasher = Sha256::new();
-    for path in files {
-        let meta = std::fs::metadata(path)?;
-        hasher.update(path.to_string_lossy().as_bytes());
-        hasher.update(meta.len().to_le_bytes());
-        if let Ok(modified) = meta.modified().and_then(|time| {
-            time.duration_since(std::time::UNIX_EPOCH)
-                .map_err(std::io::Error::other)
-        }) {
-            hasher.update(modified.as_millis().to_le_bytes());
-        }
+fn load_adapter_cursor(state: &AppState, source_id: &str) -> BiResult<AdapterCursor> {
+    let conn = state.db.conn()?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT cursor FROM source_checkpoints WHERE source_id=?1",
+            rusqlite::params![source_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(raw
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default())
+}
+
+fn resume_position(path: &std::path::Path, prior: &FileCursor) -> BiResult<(u64, usize, Sha256)> {
+    let mut file = std::fs::File::open(path)?;
+    if prior.offset == 0 || file.metadata()?.len() < prior.offset {
+        return Ok((0, 0, Sha256::new()));
     }
-    Ok(hex::encode(hasher.finalize()))
+    let mut hasher = Sha256::new();
+    let mut remaining = prior.offset;
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining > 0 {
+        let read_len = remaining.min(buffer.len() as u64) as usize;
+        let count = file.read(&mut buffer[..read_len])?;
+        if count == 0 {
+            return Ok((0, 0, Sha256::new()));
+        }
+        hasher.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    let actual = hex::encode(hasher.clone().finalize());
+    if actual != prior.prefix_hash {
+        return Ok((0, 0, Sha256::new()));
+    }
+    Ok((prior.offset, prior.line, hasher))
 }
 
 fn hash_text(value: &str) -> String {
@@ -346,9 +403,29 @@ mod tests {
         let second = sync_source(&state, &source.id, None).unwrap();
         assert_eq!(first.observations_processed, 1);
         assert_eq!(second.observations_processed, 0);
-        assert_eq!(second.duplicates, 1);
+        assert_eq!(second.duplicates, 0);
+        use std::io::Write;
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&transcript)
+                .unwrap(),
+            "{{\"id\":\"second\",\"role\":\"user\",\"content\":\"I prefer deterministic local extraction.\"}}"
+        )
+        .unwrap();
+        let appended = sync_source(&state, &source.id, None).unwrap();
+        assert_eq!(appended.observations_processed, 1);
+
+        std::fs::write(
+            &transcript,
+            "{\"role\":\"user\",\"content\":\"We decided to keep all memory processing local.\"}\n{\"id\":\"replacement\",\"role\":\"user\",\"content\":\"The project uses an opaque source checkpoint.\"}\n",
+        )
+        .unwrap();
+        let replaced = sync_source(&state, &source.id, None).unwrap();
+        assert_eq!(replaced.observations_processed, 1);
+        assert_eq!(replaced.duplicates, 1);
         assert!(std::fs::read_to_string(transcript)
             .unwrap()
-            .contains("all memory processing local"));
+            .contains("opaque source checkpoint"));
     }
 }

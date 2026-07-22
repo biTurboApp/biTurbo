@@ -58,7 +58,7 @@ pub fn run_due(state: &AppState) -> BiResult<usize> {
         {
             continue;
         }
-        let lease = match crate::runtime::claim_lease(
+        let _lease = match crate::runtime::claim_guard(
             state,
             Some(&project_id),
             "scheduled_maintenance",
@@ -93,7 +93,6 @@ pub fn run_due(state: &AppState) -> BiResult<usize> {
             )?;
             Ok(())
         })?;
-        let _ = crate::runtime::release_lease(state, &lease.lease_key);
         match outcome {
             Ok(()) => completed += 1,
             Err(error) => {

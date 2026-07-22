@@ -68,6 +68,9 @@ function MemoryInbox() {
   const [editText, setEditText] = useState("");
   const [sourceKind, setSourceKind] = useState<"codex" | "claude_code">("codex");
   const [sourcePath, setSourcePath] = useState("");
+  const [candidateSource, setCandidateSource] = useState("all");
+  const [candidateCategory, setCandidateCategory] = useState("all");
+  const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,19 +92,35 @@ function MemoryInbox() {
 
   useEffect(() => { void load(); }, [load]);
 
-  async function decide(candidate: MemoryCandidate, action: "approve" | "edit_and_approve" | "reject") {
+  async function decide(candidate: MemoryCandidate, action: "approve" | "edit_and_approve" | "reject" | "merge" | "defer") {
     try {
       await api.reviewMemoryCandidate({
         candidate_id: candidate.id,
         action,
         edited_content: action === "edit_and_approve" ? editText : null,
+        target_memory_id: action === "merge" ? mergeTargets[candidate.id]?.trim() : null,
         expected_version: candidate.version,
         decided_by: "desktop",
       });
       setCandidates((items) => items.filter((item) => item.id !== candidate.id));
       setEditing(null);
-      if (action !== "reject") await refreshMemories();
-      showToast({ kind: "ok", text: action === "reject" ? "Candidate rejected" : "Memory activated" });
+      if (action === "approve" || action === "edit_and_approve") await refreshMemories();
+      showToast({ kind: "ok", text: action === "reject" ? "Candidate rejected" : action === "defer" ? "Candidate deferred" : action === "merge" ? "Candidate merged" : "Memory activated" });
+    } catch (error) {
+      showToast({ kind: "err", text: String(error) });
+      await load();
+    }
+  }
+
+  async function bulk(action: "approve" | "reject") {
+    const selected = filteredCandidates.filter((candidate) => action === "reject" || (!candidate.contradiction_uid && !candidate.duplicate_memory_uid));
+    try {
+      for (const candidate of selected) {
+        await api.reviewMemoryCandidate({ candidate_id: candidate.id, action, expected_version: candidate.version, decided_by: "desktop-bulk" });
+      }
+      if (action === "approve") await refreshMemories();
+      await load();
+      showToast({ kind: "ok", text: `${selected.length} candidate(s) ${action === "approve" ? "approved" : "rejected"}` });
     } catch (error) {
       showToast({ kind: "err", text: String(error) });
       await load();
@@ -146,6 +165,11 @@ function MemoryInbox() {
     }
   }
 
+  const filteredCandidates = candidates.filter((candidate) =>
+    (candidateSource === "all" || candidate.source_kind === candidateSource)
+    && (candidateCategory === "all" || candidate.mem_type === candidateCategory));
+  const safeBulkCount = filteredCandidates.filter((candidate) => !candidate.contradiction_uid && !candidate.duplicate_memory_uid).length;
+
   return (
     <div className="space-y-5">
       <section className="card p-5">
@@ -167,16 +191,18 @@ function MemoryInbox() {
         ))}</div>}
       </section>
 
-      <div className="flex items-center justify-between"><div><h3 className="font-medium">Pending candidates</h3><p className="text-xs text-text-muted">Candidates are excluded from recall until approved.</p></div><button className="btn-ghost" onClick={() => void load()}><RefreshCw size={13} /> Refresh</button></div>
-      {loading ? <div className="py-12 text-center text-sm text-text-muted">Loading candidates…</div> : candidates.length === 0 ? <div className="card py-12 text-center text-sm text-text-muted"><ShieldCheck className="mx-auto mb-3 text-success" size={24} />Inbox is clear.</div> : <div className="space-y-3">{candidates.map((candidate) => (
+      <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="font-medium">Pending candidates</h3><p className="text-xs text-text-muted">Candidates are excluded from recall until approved.</p></div><div className="flex flex-wrap gap-2"><select className="input max-w-36" value={candidateSource} onChange={(event) => setCandidateSource(event.target.value)}><option value="all">All sources</option><option value="generic">Generic API</option><option value="codex">Codex</option><option value="claude_code">Claude Code</option></select><select className="input max-w-36" value={candidateCategory} onChange={(event) => setCandidateCategory(event.target.value)}><option value="all">All categories</option>{[...new Set(candidates.map((candidate) => candidate.mem_type))].map((category) => <option key={category} value={category}>{category}</option>)}</select><button className="btn-outline" disabled={safeBulkCount === 0} onClick={() => void bulk("approve")}><Check size={13} /> Approve safe ({safeBulkCount})</button><button className="btn-ghost text-danger" disabled={filteredCandidates.length === 0} onClick={() => void bulk("reject")}><X size={13} /> Reject shown</button><button className="btn-ghost" onClick={() => void load()}><RefreshCw size={13} /> Refresh</button></div></div>
+      {loading ? <div className="py-12 text-center text-sm text-text-muted">Loading candidates…</div> : filteredCandidates.length === 0 ? <div className="card py-12 text-center text-sm text-text-muted"><ShieldCheck className="mx-auto mb-3 text-success" size={24} />Inbox is clear.</div> : <div className="space-y-3">{filteredCandidates.map((candidate) => (
         <article key={candidate.id} className="card p-5">
           <div className="flex items-start gap-4"><div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2"><span className="chip">{candidate.mem_type}</span><span className="text-xs text-text-dim">{Math.round(candidate.confidence * 100)}% confidence</span>{candidate.contradiction_uid && <span className="rounded bg-danger/10 px-2 py-0.5 text-xs text-danger">contradiction</span>}</div>
+            <div className="flex flex-wrap items-center gap-2"><span className="chip">{candidate.mem_type}</span><span className="chip">{candidate.source_kind}</span><span className="text-xs text-text-dim">{Math.round(candidate.confidence * 100)}% confidence · {new Date(candidate.source_timestamp).toLocaleString()}</span>{candidate.contradiction_uid && <span className="rounded bg-danger/10 px-2 py-0.5 text-xs text-danger">contradiction</span>}{candidate.duplicate_memory_uid && <span className="rounded bg-warning/10 px-2 py-0.5 text-xs text-warning">duplicate</span>}</div>
             {editing === candidate.id ? <textarea className="input mt-3 min-h-24" value={editText} onChange={(event) => setEditText(event.target.value)} /> : <p className="mt-3 text-sm leading-relaxed">{candidate.content}</p>}
             {candidate.evidence[0] && <blockquote className="mt-3 border-l-2 border-border pl-3 text-xs text-text-muted">{candidate.evidence[0].excerpt}</blockquote>}
+            {(candidate.contradiction_uid || candidate.duplicate_memory_uid) && <div className="mt-2 font-mono text-[10px] text-text-dim">Related memory: {candidate.contradiction_uid ?? candidate.duplicate_memory_uid}</div>}
           </div></div>
           <div className="mt-4 flex flex-wrap justify-end gap-2">
-            <button className="btn-ghost text-danger" onClick={() => void decide(candidate, "reject")}><X size={13} /> Reject</button>
+            <button className="btn-ghost" onClick={() => void decide(candidate, "defer")}>Defer</button><button className="btn-ghost text-danger" onClick={() => void decide(candidate, "reject")}><X size={13} /> Reject</button>
+            <input className="input max-w-48" value={mergeTargets[candidate.id] ?? ""} onChange={(event) => setMergeTargets((targets) => ({ ...targets, [candidate.id]: event.target.value }))} placeholder="Existing memory ID" /><button className="btn-outline" disabled={!mergeTargets[candidate.id]?.trim()} onClick={() => void decide(candidate, "merge")}>Merge</button>
             {editing === candidate.id ? <><button className="btn-ghost" onClick={() => setEditing(null)}>Cancel edit</button><button className="btn-primary" onClick={() => void decide(candidate, "edit_and_approve")} disabled={!editText.trim()}><Check size={13} /> Save & approve</button></> : <><button className="btn-outline" onClick={() => { setEditing(candidate.id); setEditText(candidate.content); }}>Edit</button><button className="btn-primary" onClick={() => void decide(candidate, "approve")}><Check size={13} /> Approve</button></>}
           </div>
         </article>
