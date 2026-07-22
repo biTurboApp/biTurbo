@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 pub fn open_pool(db_path: &Path) -> BiResult<DbPool> {
     if let Some(parent) = db_path.parent() {
@@ -166,6 +166,7 @@ fn run_migrations(conn: &mut rusqlite::Connection) -> BiResult<()> {
         }
     }
     tx.execute_batch(RELIABILITY_SCHEMA)?;
+    tx.execute_batch(AUTONOMOUS_RUNTIME_SCHEMA)?;
     tx.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -359,6 +360,210 @@ CREATE TABLE IF NOT EXISTS recall_feedback (
     FOREIGN KEY(recall_id) REFERENCES recall_events(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_recall_feedback_memory ON recall_feedback(memory_uid, created_at DESC);
+"#;
+
+const AUTONOMOUS_RUNTIME_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS observation_sources (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK(kind IN ('generic', 'codex', 'claude_code')),
+    name            TEXT NOT NULL,
+    root_path       TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 0,
+    config          TEXT NOT NULL DEFAULT '{}',
+    last_sync_at    INTEGER,
+    last_error      TEXT,
+    processed_count INTEGER NOT NULL DEFAULT 0,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    UNIQUE(project_id, kind, name),
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_observation_sources_project
+    ON observation_sources(project_id, enabled, kind);
+
+CREATE TABLE IF NOT EXISTS source_checkpoints (
+    source_id       TEXT PRIMARY KEY,
+    cursor          TEXT NOT NULL,
+    content_identity TEXT,
+    updated_at      INTEGER NOT NULL,
+    FOREIGN KEY(source_id) REFERENCES observation_sources(id) ON DELETE CASCADE
+);
+
+-- Deliberately contains no raw observation body.
+CREATE TABLE IF NOT EXISTS observations (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    source_id       TEXT,
+    source_kind     TEXT NOT NULL,
+    external_id     TEXT NOT NULL,
+    session_id      TEXT,
+    occurred_at     INTEGER NOT NULL,
+    role            TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    error_category  TEXT,
+    created_at      INTEGER NOT NULL,
+    UNIQUE(project_id, source_kind, external_id),
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY(source_id) REFERENCES observation_sources(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_observations_project_time
+    ON observations(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS memory_candidates (
+    id                  TEXT PRIMARY KEY,
+    observation_id      TEXT NOT NULL,
+    project_id          TEXT NOT NULL,
+    content             TEXT NOT NULL,
+    mem_type            TEXT NOT NULL,
+    tags                TEXT NOT NULL DEFAULT '[]',
+    confidence          REAL NOT NULL,
+    status              TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','merged','expired','processing_error')),
+    duplicate_memory_uid TEXT,
+    contradiction_uid   TEXT,
+    resulting_memory_uid TEXT,
+    version             INTEGER NOT NULL DEFAULT 1,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE CASCADE,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_candidates_project_status
+    ON memory_candidates(project_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS candidate_evidence (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id    TEXT NOT NULL,
+    excerpt         TEXT NOT NULL,
+    source_pointer  TEXT,
+    source_timestamp INTEGER NOT NULL,
+    evidence_hash   TEXT NOT NULL,
+    extraction_method TEXT NOT NULL,
+    FOREIGN KEY(candidate_id) REFERENCES memory_candidates(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS candidate_decisions (
+    id               TEXT PRIMARY KEY,
+    candidate_id     TEXT NOT NULL,
+    action           TEXT NOT NULL CHECK(action IN ('approve','edit_and_approve','reject','merge','defer')),
+    decided_by       TEXT,
+    edited_content   TEXT,
+    target_memory_uid TEXT,
+    resulting_memory_uid TEXT,
+    expected_version INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL,
+    UNIQUE(candidate_id, expected_version),
+    FOREIGN KEY(candidate_id) REFERENCES memory_candidates(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS capture_policies (
+    project_id            TEXT PRIMARY KEY,
+    enabled_sources       TEXT NOT NULL DEFAULT '["generic"]',
+    allowed_categories    TEXT NOT NULL DEFAULT '["preference","decision","fact","pattern"]',
+    extraction_mode       TEXT NOT NULL DEFAULT 'deterministic',
+    ollama_endpoint       TEXT NOT NULL DEFAULT 'http://127.0.0.1:11434',
+    ollama_model          TEXT,
+    approval_mode         TEXT NOT NULL DEFAULT 'review_required',
+    auto_approve_categories TEXT NOT NULL DEFAULT '[]',
+    evidence_max_chars    INTEGER NOT NULL DEFAULT 500,
+    redaction_mode        TEXT NOT NULL DEFAULT 'strict',
+    notify_candidates     INTEGER NOT NULL DEFAULT 1,
+    updated_at            INTEGER NOT NULL,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_policies (
+    project_id          TEXT PRIMARY KEY,
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    interval_hours      INTEGER NOT NULL DEFAULT 24,
+    idle_delay_seconds  INTEGER NOT NULL DEFAULT 120,
+    auto_safe_repairs   INTEGER NOT NULL DEFAULT 1,
+    last_run_at         INTEGER,
+    next_run_at         INTEGER,
+    updated_at          INTEGER NOT NULL,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS integrity_runs (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT,
+    trigger_kind       TEXT NOT NULL,
+    status             TEXT NOT NULL,
+    checked_projects   INTEGER NOT NULL DEFAULT 0,
+    issue_count        INTEGER NOT NULL DEFAULT 0,
+    repaired_count     INTEGER NOT NULL DEFAULT 0,
+    deferred_count     INTEGER NOT NULL DEFAULT 0,
+    before_summary     TEXT,
+    after_summary      TEXT,
+    started_at         INTEGER NOT NULL,
+    finished_at        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_integrity_runs_project
+    ON integrity_runs(project_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS integrity_issues (
+    id                 TEXT PRIMARY KEY,
+    run_id             TEXT NOT NULL,
+    project_id         TEXT,
+    severity           TEXT NOT NULL,
+    subsystem          TEXT NOT NULL,
+    issue_kind         TEXT NOT NULL,
+    expected_state     TEXT NOT NULL,
+    actual_state       TEXT NOT NULL,
+    recommended_action TEXT NOT NULL,
+    safe_automatic     INTEGER NOT NULL DEFAULT 0,
+    repaired_at        INTEGER,
+    created_at         INTEGER NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES integrity_runs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS repair_runs (
+    id                 TEXT PRIMARY KEY,
+    integrity_run_id   TEXT NOT NULL,
+    project_id         TEXT,
+    issue_ids          TEXT NOT NULL,
+    status             TEXT NOT NULL,
+    dry_run            INTEGER NOT NULL DEFAULT 0,
+    result             TEXT,
+    created_at         INTEGER NOT NULL,
+    finished_at        INTEGER,
+    FOREIGN KEY(integrity_run_id) REFERENCES integrity_runs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS runtime_leases (
+    lease_key          TEXT PRIMARY KEY,
+    project_id         TEXT,
+    task_class         TEXT NOT NULL,
+    owner_id           TEXT NOT NULL,
+    heartbeat_at       INTEGER NOT NULL,
+    expires_at         INTEGER NOT NULL,
+    created_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_leases_expiry ON runtime_leases(expires_at);
+
+CREATE TABLE IF NOT EXISTS model_artifacts (
+    id                 TEXT PRIMARY KEY,
+    kind               TEXT NOT NULL,
+    model_name         TEXT NOT NULL,
+    version            TEXT NOT NULL,
+    path               TEXT,
+    sha256             TEXT,
+    size_bytes         INTEGER,
+    status             TEXT NOT NULL,
+    enabled            INTEGER NOT NULL DEFAULT 0,
+    error              TEXT,
+    updated_at         INTEGER NOT NULL,
+    UNIQUE(kind, model_name, version)
+);
+
+CREATE TABLE IF NOT EXISTS accelerator_preferences (
+    scope              TEXT PRIMARY KEY,
+    requested_provider TEXT NOT NULL DEFAULT 'auto' CHECK(requested_provider IN ('auto','cpu','cuda')),
+    updated_at         INTEGER NOT NULL
+);
 "#;
 
 pub struct Db {

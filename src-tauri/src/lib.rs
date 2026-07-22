@@ -20,6 +20,7 @@
 //! Linux). Both the GUI and the MCP server share the same on-disk state.
 
 pub mod application;
+pub mod capture;
 pub mod commands;
 pub mod consolidate;
 pub mod db;
@@ -27,6 +28,7 @@ pub mod embed;
 pub mod error;
 pub mod index_engine;
 pub mod ingest;
+pub mod integrity;
 pub mod io;
 pub mod mcp;
 pub mod memory;
@@ -34,6 +36,7 @@ pub mod operations;
 pub mod persistence;
 pub mod project;
 pub mod recall;
+pub mod runtime;
 pub mod scheduler;
 pub mod smoke;
 pub mod state;
