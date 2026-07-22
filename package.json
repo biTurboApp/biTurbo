@@ -1,9 +1,9 @@
 {
   "name": "biturbo",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Local-first memory layer for AI coding agents. turbovec + Tauri 2 + MCP.",
+  "description": "Local-first autonomous memory runtime for AI coding agents. turbovec + Tauri 2 + MCP.",
   "trustedDependencies": [
     "esbuild",
     "unrs-resolver"

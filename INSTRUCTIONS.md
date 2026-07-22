@@ -40,7 +40,7 @@ When in doubt, recall. It is cheap. It is correct.
 
 ---
 
-## 3. Tool surface (27 tools, all via MCP)
+## 3. Tool surface (50 tools, all via MCP)
 
 ### Memories
 
@@ -93,6 +93,29 @@ When in doubt, recall. It is cheap. It is correct.
 | `recent_activity` | Audit log of recent writes/reads/ingests. |
 | `register_agent` | **Call once per session** to attribute your writes. |
 | `get_project_name_from_file` | Resolve `projectName` from a project root's `.biTurbo` file. |
+
+### Automatic capture and candidate review
+
+| Tool | When to use it |
+|---|---|
+| `submit_observation` | Submit a local event with a stable external id. It creates reviewable candidates, never an active memory directly. Do not submit secrets or full transcript archives. |
+| `list_observation_sources` / `source_status` | Inspect configured read-only Codex and Claude Code transcript sources and their checkpoints. |
+| `start_source_sync` | Start an incremental, supervised transcript sync for an explicitly enabled source. |
+| `list_memory_candidates` / `get_memory_candidate` | Inspect pending candidates and their bounded redacted evidence. |
+| `review_memory_candidate` | Approve, edit-and-approve, reject, merge, or defer with optimistic version checking. |
+| `get_capture_policy` / `update_capture_policy` | Read or replace per-project source, extraction, redaction, and review rules. |
+
+### Runtime health and local models
+
+| Tool | When to use it |
+|---|---|
+| `health_report` / `integrity_report` | Inspect agreement between authoritative SQLite state and reconstructable indexes/counters. |
+| `start_integrity_check` | Run a persisted integrity audit through the operation supervisor. |
+| `repair_integrity` | Preview or execute safe derived-state repairs. Semantic memory changes are rejected. |
+| `get_maintenance_policy` / `update_maintenance_policy` | Configure overdue checks, idle delay, interval, and safe automatic repair. |
+| `accelerator_status` | Report compiled, requested, and actually effective CPU/CUDA providers and fallback reasons. |
+| `get_accelerator_preference` / `set_accelerator_preference` | Configure `auto`, `cpu`, or required `cuda`; the environment override wins. |
+| `reranker_status` / `start_reranker_download` / `set_reranker_enabled` | Inspect, explicitly install, and opt into the pinned local reranker. |
 
 ---
 

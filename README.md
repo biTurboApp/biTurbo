@@ -2,7 +2,7 @@
 
 # biTurbo
 
-**Local-first memory layer for AI coding agents.**
+**Local-first autonomous memory runtime for AI coding agents.**
 
 Persistent · project-scoped · semantic · MCP-native.
 
@@ -13,7 +13,7 @@ Persistent · project-scoped · semantic · MCP-native.
 [![License: MIT](https://img.shields.io/badge/license-MIT-8FB87D.svg)](./LICENSE)
 [![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-D4A574.svg)](https://www.rust-lang.org)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-7DC4E4.svg)](https://tauri.app)
-[![MCP](https://img.shields.io/badge/MCP-27%20tools-C7A0E0.svg)](#mcp-tools)
+[![MCP](https://img.shields.io/badge/MCP-50%20tools-C7A0E0.svg)](#mcp-tools)
 [![turbovec 4-bit](https://img.shields.io/badge/turbovec-4--bit%20%7C%2016%C3%97%20compression-D4B574.svg)](https://github.com/RyanCodrai/turbovec)
 [![npm 10+](https://img.shields.io/badge/npm-10%2B-CB3837.svg)](https://npmjs.com)
 
@@ -26,11 +26,11 @@ Persistent · project-scoped · semantic · MCP-native.
 Every AI coding session starts blank. biTurbo gives your agents **persistent, project-scoped, semantic memory** that lives on your disk. No cloud, no SaaS, no embedding leakage.
 
 - **One binary.** Pure Rust, cold start < 50ms, no Python env, no Docker.
-- **MCP-native.** 27 tools. Plugs into Mavis, Claude Code, Cursor, Cline, anything that speaks MCP.
+- **MCP-native.** 50 tools shared with the desktop runtime. Plugs into Claude Code, Codex, Cursor, Cline, or anything that speaks MCP.
 - **Per-project isolation.** testy memories never pollute scout-qa.
 - **Maximum compression.** [turbovec 4-bit](https://github.com/RyanCodrai/turbovec) = 16× smaller than float32. A million memories fit in laptop RAM.
 - **Tree-sitter code indexing.** Drop a folder, get semantic code search. *"Where is auth handled?"*
-- **Self-maintaining.** Scheduled decay / dedup / merge. The index doesn't rot.
+- **Autonomous but reviewable.** Local capture creates candidates, integrity checks repair only derived state, and semantic changes stay under user control.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -68,6 +68,18 @@ cd src-tauri && cargo build --release --bin biturbo-mcp
 
 For the desktop app you also need the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your platform (Xcode CLT on macOS, webkit2gtk on Linux, MSVC build tools + WebView2 on Windows).
 
+### Linux / WSL CUDA
+
+The normal build remains CPU-only. A separate Linux x86-64 build can enable the ONNX Runtime CUDA provider:
+
+```bash
+npm run cuda:check             # compile the CUDA feature without requiring a GPU
+npm run mcp:build:cuda         # build the CUDA-capable MCP binary
+npm run tauri:run:wsl:cuda     # WSL2 development runner
+```
+
+Set `BITURBO_EMBED_EP=auto|cpu|cuda`, or use Runtime → Models and acceleration. `auto` falls back to CPU with a visible reason; `cuda` fails with a structured error when the NVIDIA runtime is unavailable. Switching providers does not change model identity and does not rebuild indexes.
+
 ### Building for distribution
 
 #### macOS (signed .dmg)
@@ -82,7 +94,7 @@ npm run tauri:build
 - macOS Developer certificate (Developer ID Application) installed in your keychain
 - Signing identity configured in `src-tauri/tauri.conf.json` under `bundle.macOS.signingIdentity`
 
-**Output**: `src-tauri/target/release/bundle/dmg/biTurbo_0.2.0_aarch64.dmg`
+**Output**: `src-tauri/target/release/bundle/dmg/biTurbo_0.3.0_aarch64.dmg`
 
 The app is code-signed but not notarized. To notarize for public distribution, set these environment variables before building:
 - `APPLE_ID` — your Apple ID email
@@ -107,7 +119,7 @@ npm run tauri:build
 - [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (pre-installed on Windows 11)
 - MSVC build tools (Visual Studio 2022 or Build Tools)
 
-**Output**: `src-tauri/target/release/bundle/msi/biTurbo_0.2.0_x64_en-US.msi`
+**Output**: `src-tauri/target/release/bundle/msi/biTurbo_0.3.0_x64_en-US.msi`
 
 For code signing, set the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` environment variables before building.
 
@@ -118,11 +130,11 @@ For code signing, set the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE
 target/debug/biturbo-mcp < /dev/null
 ```
 
-Smoke-test all 27 tools against a real binary:
+Smoke-test all 50 tools against a real binary:
 
 ```bash
 pnpm mcp:test
-# → 27 pass · 0 fail · 0 skip
+# → all discovered tools pass
 ```
 
 ---
@@ -143,6 +155,7 @@ Opens the Tauri 2 window. First semantic operation downloads `BGE-small-en` (~30
 | **Memories** | Search, filter by type / tag / importance, inspect, edit, forget |
 | **Projects** | Create, ingest code, switch, export, delete |
 | **Graph** | Canvas-rendered code dependency graph with viewport culling |
+| **Runtime** | Review captured candidates, inspect/repair integrity, and configure local models and CPU/CUDA execution |
 | **Agents** | List of MCP-connected agents, last-seen, write counts |
 | **Settings** | Theme, data dir, MCP config snippets, agent rule blocks |
 
@@ -183,9 +196,9 @@ The first time an agent connects, it should:
 
 Full ruleset, anti-patterns, and tool reference: see [INSTRUCTIONS.md](./INSTRUCTIONS.md).
 
-### MCP tools (27)
+### MCP tools (50)
 
-These are the stable tools exposed to agents. The internal dispatcher may contain additional development-only helpers that are not part of the public MCP surface.
+The original v0.2 tools remain compatible. v0.3 adds the following transport-parity groups; Tauri invokes the same shared Rust runtime.
 
 | | | | |
 |---|---|---|---|
@@ -196,6 +209,12 @@ These are the stable tools exposed to agents. The internal dispatcher may contai
 | `list_projects` | `get_project` | `create_project` | `delete_project` |
 | `ingest_project` | `consolidate` | `consolidate_status` | `get_project_name_from_file` |
 | `stats` | `bootstrap` | `recent_activity` | `register_agent` |
+| `submit_observation` | `list_observation_sources` | `source_status` | `start_source_sync` |
+| `list_memory_candidates` | `get_memory_candidate` | `review_memory_candidate` | `get_capture_policy` |
+| `update_capture_policy` | `health_report` | `start_integrity_check` | `integrity_report` |
+| `repair_integrity` | `get_maintenance_policy` | `update_maintenance_policy` | `accelerator_status` |
+| `get_accelerator_preference` | `set_accelerator_preference` | `reranker_status` | `start_reranker_download` |
+| `set_reranker_enabled` |  |  |  |
 
 ---
 
@@ -221,6 +240,10 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 
 `pnpm mcp:test` spawns the real binary, discovers every tool via `tools/list`, calls each with sane args, and prints a colored PASS/FAIL table. Catches schema and dispatch bugs before they hit your agent.
 
+### Capture privacy and recovery
+
+Transcript adapters are disabled by default and read only a directory the user explicitly enables. biTurbo normalizes and redacts observations in memory, persists only receipt metadata, bounded redacted evidence, and reviewable candidates, then discards the raw body. Pending candidates never enter normal recall. See the [v0.3 architecture](./docs/architecture/v0.3-autonomous-memory.md) and [encryption limitations](./docs/architecture/encryption-at-rest.md).
+
 ---
 
 ## Stack
@@ -234,7 +257,7 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 | Backend | Rust (1.77+) | Cold start < 50ms, single binary, no Python env |
 | DB | SQLite + r2d2 + rusqlite | Local, WAL, zero-config |
 | Vector | turbovec 0.8 (IdMapIndex, 4-bit) | 16× compression vs float32, beats FAISS, MIT |
-| Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch, Metal (macOS) / DirectML (Windows) / CPU, ~30 MB model |
+| Embed | fastembed 4 (BGE-small-en ONNX) | No PyTorch; CPU everywhere and optional ONNX Runtime CUDA on Linux/WSL |
 | MCP | stdio JSON-RPC | Lightweight hand-rolled MCP transport, no SDK runtime dependency |
 | Tree-sitter | 0.25 + lang crates | 22 languages, definition-level chunks, structural code search |
 
@@ -246,22 +269,24 @@ All colors flow through CSS custom properties. `:root` (dark) and `:root.light` 
 
 - [x] Per-project turbovec IdMapIndex with hybrid allowlist filters
 - [x] Tree-sitter indexed code (22 languages, including SQL, Dart, Lua, Scala, R, and PowerShell)
-- [x] MCP stdio server with 27 tools
+- [x] MCP stdio server with 50 tools and Tauri parity
 - [x] Web-viewer + graph view (canvas, Barnes–Hut in worker)
 - [x] Dark + light theme, persistent
 - [x] Confirmation modal + context menu primitives
 - [x] MCP smoke test (`pnpm mcp:test`)
+- [x] Privacy-preserving Codex, Claude Code, and generic observation capture with review inbox
+- [x] Persisted integrity audits, safe derived-state repair, leases, and overdue maintenance
+- [x] Explainable hybrid recall with opt-in local cross-encoder reranking
+- [x] CPU/CUDA execution-provider selection and Linux/WSL CUDA artifact workflow
+- [x] Watch-folder ingest and required GitHub Actions checks
 
 ### Next up
 
-- [ ] **Watch-folder ingest** — auto-reindex on file change
-- [ ] **Cross-encoder re-ranker** for top-k (optional, pluggable)
 - [ ] **Encrypted-at-rest** mode (project-level key)
 - [ ] **Multi-device sync** (CRDTs over the same on-disk format)
 - [ ] **Built-in chat view** that calls an LLM with recalled context (opt-in)
 - [ ] **Web export** of memories for sharing
 - [ ] **Memory diffing** between projects
-- [ ] **GitHub Actions CI** — run smoke test on every PR
 - [ ] **Package managers** — `brew install biturbo` (macOS), `winget install biturbo` (Windows), AUR package (Linux)
 
 ---
@@ -290,7 +315,7 @@ biTurbo/
 │   │   ├── project.rs            multi-project isolation
 │   │   ├── ingest.rs             tree-sitter project walker
 │   │   ├── consolidate.rs        decay / dedup / merge
-│   │   ├── mcp.rs                stdio MCP server (27 tools)
+│   │   ├── mcp.rs                stdio MCP adapter (50 tools)
 │   │   ├── scheduler.rs          background consolidate scheduler
 │   │   └── commands.rs           Tauri IPC handlers
 │   └── bin/biturbo_mcp.rs        Standalone MCP server binary

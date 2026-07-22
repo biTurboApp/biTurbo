@@ -1,6 +1,6 @@
 # Releasing biTurbo
 
-biTurbo is built and released through GitHub Actions. The release pipeline produces signed installers for Windows, macOS Intel, and macOS ARM, and bundles the `biturbo-mcp` MCP server binary inside each app.
+biTurbo is built and released through GitHub Actions. The release pipeline produces installers for Windows, Linux, macOS Intel, and macOS ARM, and bundles the `biturbo-mcp` MCP server binary inside each app.
 
 ## Quick start
 
@@ -12,7 +12,7 @@ biTurbo is built and released through GitHub Actions. The release pipeline produ
    npm run release
    ```
 
-This reads the current version from `package.json`, creates a git tag like `v0.2.0`, and pushes it to GitHub. The tag triggers the [`.github/workflows/release.yml`](../.github/workflows/release.yml) workflow, which builds all three targets and creates a draft GitHub Release.
+This reads the current version from `package.json`, creates a git tag like `v0.3.0`, and pushes it to GitHub. The tag triggers the [`.github/workflows/release.yml`](../.github/workflows/release.yml) workflow, which builds the standard platform targets and creates a draft GitHub Release. CUDA MCP artifacts are produced separately by `cuda-runtime.yml` on the NVIDIA runner.
 
 ## Versioning
 
@@ -32,6 +32,8 @@ If the tag already exists (e.g. `v0.1.0`), the script refuses to run. Bump the v
 | Windows x64 | `windows-latest` | `.msi` installer |
 | macOS ARM | `macos-latest` | `.dmg` for Apple Silicon |
 | macOS Intel | `macos-latest` | `.dmg` for Intel Macs |
+| Linux x64 CPU | `ubuntu-latest` | `.deb` and AppImage |
+| Linux x64 CUDA MCP | self-hosted NVIDIA | separate `biturbo-mcp` archive |
 
 The pipeline also bundles the `biturbo-mcp` MCP server binary as a Tauri `externalBin` sidecar. It is built separately for each target and placed at `src-tauri/binaries/biturbo-mcp-<target-triple>` before the app is packaged.
 

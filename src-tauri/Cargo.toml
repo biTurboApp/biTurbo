@@ -1,6 +1,6 @@
 [package]
 name = "biturbo"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first memory layer for AI coding agents. turbovec + Tauri 2 + MCP."
 authors = ["you"]
 edition = "2021"
