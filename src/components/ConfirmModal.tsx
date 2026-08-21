@@ -43,13 +43,18 @@ function ConfirmModal({
   onCancel: () => void;
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
   const [pending, setPending] = useState(false);
+  const tone = opts.tone ?? "danger";
 
-  // Focus the confirm button on open, restore focus on close.
+  // Focus the safe action on open (Cancel for destructive confirms so a
+  // reflexive Enter can't trigger an irreversible action), restore focus
+  // on close.
   useEffect(() => {
     previouslyFocused.current = (document.activeElement as HTMLElement) ?? null;
-    confirmRef.current?.focus();
+    const initial = tone === "danger" ? cancelRef.current : confirmRef.current;
+    initial?.focus();
     return () => {
       // After close, hand focus back to whatever opened the modal.
       const opener = previouslyFocused.current;
@@ -83,7 +88,6 @@ function ConfirmModal({
     }
   }
 
-  const tone = opts.tone ?? "danger";
   const confirmLabel = opts.confirmLabel ?? "Delete";
   const cancelLabel = opts.cancelLabel ?? "Cancel";
 
@@ -126,6 +130,7 @@ function ConfirmModal({
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-5 py-3">
           <button
+            ref={cancelRef}
             onClick={onCancel}
             disabled={pending}
             className="btn-outline"

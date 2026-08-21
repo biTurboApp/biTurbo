@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useApp } from "../lib/store";
 import { api } from "../lib/api";
 import { Bot, Plus, RefreshCw } from "lucide-react";
-import { timeAgo } from "../lib/format";
+import { timeAgo, friendlyError } from "../lib/format";
 
 const KINDS = ["mavis", "claude-code", "cursor", "cline", "custom"];
 
@@ -24,7 +24,7 @@ export function Agents() {
       await refreshAgents();
       showToast({ kind: "ok", text: `Registered ${name}` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(false);
     }
@@ -40,7 +40,7 @@ export function Agents() {
             directly. Each agent's reads and writes are attributed automatically.
           </p>
         </div>
-        <button onClick={() => refreshAgents()} className="btn-ghost">
+        <button onClick={() => refreshAgents()} className="btn-ghost" aria-label="Refresh agents" title="Refresh agents">
           <RefreshCw size={13} />
         </button>
       </div>
@@ -95,8 +95,11 @@ export function Agents() {
           </div>
         )}
         {agents.map((a) => {
-          // Only show "live" badge if agent was seen within the last 24 hours.
-          const isLive = Date.now() - a.last_seen < 24 * 60 * 60 * 1000;
+          // Honest activity tiers: only genuinely recent activity pulses.
+          const age = Date.now() - a.last_seen;
+          const isActiveNow = age < 5 * 60 * 1000;
+          const isToday = age < 24 * 60 * 60 * 1000;
+          const daysAgo = Math.floor(age / (24 * 60 * 60 * 1000));
           return (
             <div key={a.id} className="card flex items-center gap-3 p-4">
               <div
@@ -115,15 +118,33 @@ export function Agents() {
                   last seen {timeAgo(a.last_seen)} · id <span className="font-mono">{a.id}</span>
                 </div>
               </div>
-              {isLive && (
-                <div className="flex items-center gap-1.5">
+              {isActiveNow && (
+                <div className="flex items-center gap-1.5" title={`last seen ${timeAgo(a.last_seen)}`}>
                   <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-pulse_dot rounded-full bg-success opacity-75" />
                     <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
                   </span>
                   <span className="text-[10px] uppercase tracking-widest text-text-dim">
-                    live
+                    active now
                   </span>
                 </div>
+              )}
+              {!isActiveNow && isToday && (
+                <span
+                  className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-text-dim"
+                  title={`last seen ${timeAgo(a.last_seen)}`}
+                >
+                  <span className="inline-flex h-2 w-2 rounded-full bg-success/50" />
+                  today
+                </span>
+              )}
+              {!isActiveNow && !isToday && (
+                <span
+                  className="text-[10px] uppercase tracking-widest text-text-dim"
+                  title={`last seen ${timeAgo(a.last_seen)}`}
+                >
+                  {daysAgo === 1 ? "yesterday" : `${daysAgo}d ago`}
+                </span>
               )}
             </div>
           );
