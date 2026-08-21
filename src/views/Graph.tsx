@@ -456,8 +456,6 @@ export function Graph() {
             )}
           </div>
         )}
-          </div>
-        )}
 
         {/* Controls */}
         <div className="pointer-events-none absolute inset-0 flex flex-col">

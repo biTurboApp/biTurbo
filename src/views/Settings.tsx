@@ -226,7 +226,6 @@ ${end}`;
 
   // The backend resolves the bundled binary's absolute path; fall back to
   // the bare name (PATH lookup) when resolution is unavailable.
-  const [mcpBinary, setMcpBinary] = useState<{ path: string; is_absolute: boolean } | null>(null);
   useEffect(() => {
     api
       .resolveMcpBinaryPath()
