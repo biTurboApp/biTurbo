@@ -61,6 +61,9 @@ interface AppStore {
   memories: Memory[];
   selectedMemoryUid: string | null;
   setSelectedMemoryUid: (uid: string | null) => void;
+  /** Full record for a selected uid that is not present in any loaded list. */
+  hydratedSelected: Memory | null;
+  selectMemoryByUid: (uid: string) => Promise<void>;
   memoryOffset: number;
   hasMoreMemories: boolean;
   loadMoreMemories: () => Promise<void>;
@@ -145,8 +148,13 @@ export const useApp = create<AppStore>((set, get) => ({
   refreshProjects: async () => {
     const projects = await api.listProjects();
     set({ projects });
-    if (!get().currentProjectId && projects.length) {
-      set({ currentProjectId: projects[0].id });
+    // If the active project no longer exists (e.g. just deleted), fall
+    // back to a surviving project so scoped views don't keep filtering
+    // by a dead id.
+    const current = get().currentProjectId;
+    if ((!current || !projects.some((p) => p.id === current)) && projects.length > 0) {
+      const fallback = projects.find((p) => p.id === "default") ?? projects[0];
+      set({ currentProjectId: fallback.id, selectedMemoryUid: null });
     }
   },
 
@@ -157,8 +165,7 @@ export const useApp = create<AppStore>((set, get) => ({
   refreshStats: async () => set({ stats: await api.stats() }),
 
   activity: [],
-  refreshActivity: async () => set({ activity: await api.recentActivity(60) }),
-
+  refreshActivity: async () => set({ activity: await api.recentActivity(1000) }),
   searchQuery: "",
   setSearchQuery: (q) => set({ searchQuery: q }),
 
@@ -171,6 +178,18 @@ export const useApp = create<AppStore>((set, get) => ({
   memories: [],
   selectedMemoryUid: null,
   setSelectedMemoryUid: (uid) => set({ selectedMemoryUid: uid }),
+  hydratedSelected: null,
+  selectMemoryByUid: async (uid) => {
+    set({ selectedMemoryUid: uid, hydratedSelected: null });
+    try {
+      const m = await api.getMemory(uid);
+      if (get().selectedMemoryUid === uid) {
+        set({ hydratedSelected: m });
+      }
+    } catch (e) {
+      get().showToast({ kind: "err", text: String(e) });
+    }
+  },
   memoryOffset: 0,
   hasMoreMemories: false,
   loadMoreMemories: async () => {
