@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/api";
 import { ingestPhaseLabel } from "../lib/format";
 import type { ConsolidateReport } from "../lib/types";
+import { friendlyError } from "../lib/format";
 
 export function TopBar() {
   const setQuickAddOpen = useApp((s) => s.setQuickAddOpen);
@@ -47,7 +48,7 @@ export function TopBar() {
       await api.consolidate(currentProjectId);
     } catch (e) {
       setConsolidating(false);
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
