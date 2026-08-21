@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useContextMenu } from "../lib/store";
 import type { GraphNode, GraphEdge } from "../lib/types";
@@ -51,6 +52,7 @@ export function Graph() {
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
   const showMenu = useContextMenu();
   const [filter, setFilter] = useState<Set<string>>(new Set(NODE_KINDS));
+  const [edgeFilter, setEdgeFilter] = useState<Set<string>>(new Set(Object.keys(EDGE_COLORS)));
   const [query, setQuery] = useState("");
   const [hover, setHover] = useState<string | null>(null);
   const [posMap, setPosMap] = useState<Record<string, Pos>>({});
@@ -67,16 +69,22 @@ export function Graph() {
     vy: number;
   } | null>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
+  // Node order of the in-flight layout request: the worker answers with
+  // positions parallel to this array.
+  const requestNodesRef = useRef<{ uid: string }[]>([]);
 
   const data = useMemo(() => {
     if (!graph) return null;
     const visibleNodes = graph.nodes.filter((n) => filter.has(n.kind));
     const visibleIds = new Set(visibleNodes.map((n) => n.uid));
     const visibleEdges = graph.edges.filter(
-      (e) => visibleIds.has(e.from) && visibleIds.has(e.to),
+      (e) =>
+        edgeFilter.has(e.edge_type) &&
+        visibleIds.has(e.from) &&
+        visibleIds.has(e.to),
     );
     return { nodes: visibleNodes, edges: visibleEdges };
-  }, [graph, filter]);
+  }, [graph, filter, edgeFilter]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -106,15 +114,17 @@ export function Graph() {
     setFirstPaintMs(null);
 
     const reqId = ++layoutReqSeq.current;
+    const reqNodes = data.nodes.map((n) => ({
+      uid: n.uid,
+      kind: n.kind,
+      file_path: n.file_path ?? null,
+      size: n.size,
+    }));
+    requestNodesRef.current = reqNodes;
     layoutWorkerRef.current?.postMessage({
       type: "layout",
       requestId: reqId,
-      nodes: data.nodes.map((n) => ({
-        uid: n.uid,
-        kind: n.kind,
-        file_path: n.file_path ?? null,
-        size: n.size,
-      })),
+      nodes: reqNodes,
       edges: data.edges.map((e) => ({ from: e.from, to: e.to })),
       width: LAYOUT_W,
       height: LAYOUT_H,
@@ -154,10 +164,18 @@ export function Graph() {
     const onMessage = (ev: MessageEvent<LayoutResult | LayoutProgress | LayoutError>) => {
       const m = ev.data;
       if (!m) return;
-      // Drop stale results — a newer request superseded this one.
-      if (m.requestId !== layoutReqSeq.current) return;
       if (m.type === "progress" || m.type === "result") {
-        setPosMap(m.positions as Record<string, Pos>);
+        // The worker returns positions as an array parallel to the request's
+        // node order; convert to the uid-keyed map the renderer uses.
+        const raw: unknown = m.positions;
+        const posMapFromWorker: Record<string, Pos> = Array.isArray(raw)
+          ? Object.fromEntries(
+              requestNodesRef.current
+                .map((n, i) => [n.uid, raw[i]] as [string, Pos | undefined])
+                .filter((entry): entry is [string, Pos] => entry[1] != null),
+            )
+          : (raw as Record<string, Pos>);
+        setPosMap(posMapFromWorker);
         if (m.type === "result") {
           setLayoutMs(Math.round(m.elapsedMs));
           send(
@@ -210,7 +228,41 @@ export function Graph() {
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    setView((v) => ({ ...v, k: Math.max(0.1, Math.min(4, v.k * factor)) }));
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    setView((v) => {
+      const k = Math.max(0.1, Math.min(4, v.k * factor));
+      // Keep the world point under the cursor fixed while zooming.
+      const wx = (mx - v.x) / v.k;
+      const wy = (my - v.y) / v.k;
+      return { k, x: mx - wx * k, y: my - wy * k };
+    });
+  }
+
+  function fitToView() {
+    if (!data || data.nodes.length === 0 || containerRef.current == null) {
+      resetView();
+      return;
+    }
+    const xs = data.nodes.map((n) => posMap[n.uid]?.x).filter((x): x is number => x != null);
+    const ys = data.nodes.map((n) => posMap[n.uid]?.y).filter((y): y is number => y != null);
+    if (xs.length === 0 || ys.length === 0) {
+      resetView();
+      return;
+    }
+    const pad = 60;
+    const minX = Math.min(...xs) - pad;
+    const maxX = Math.max(...xs) + pad;
+    const minY = Math.min(...ys) - pad;
+    const maxY = Math.max(...ys) + pad;
+    const { width, height } = containerRef.current.getBoundingClientRect();
+    const k = Math.max(0.1, Math.min(2, Math.min(width / (maxX - minX), height / (maxY - minY))));
+    setView({
+      k,
+      x: width / 2 - ((minX + maxX) / 2) * k,
+      y: height / 2 - ((minY + maxY) / 2) * k,
+    });
   }
 
   function onMouseDown(e: React.MouseEvent) {
@@ -376,6 +428,9 @@ export function Graph() {
             <button onClick={reload} className="btn-ghost" title="Refresh">
               <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
             </button>
+            <button onClick={fitToView} className="btn-ghost" title="Fit graph to view">
+              fit
+            </button>
             <button onClick={resetView} className="btn-ghost" title="Reset view">
               reset
             </button>
@@ -444,18 +499,30 @@ export function Graph() {
           <div className="space-y-1">
             {Object.entries(EDGE_COLORS).map(([k, c]) => {
               const n = graph.edges.filter((e) => e.edge_type === k).length;
+              const on = edgeFilter.has(k);
               return (
-                <div
+                <label
                   key={k}
-                  className="flex items-center gap-2 px-2 py-1 text-xs text-text-muted"
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-surface-2"
                 >
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() => {
+                      const next = new Set(edgeFilter);
+                      if (next.has(k)) next.delete(k);
+                      else next.add(k);
+                      setEdgeFilter(next);
+                    }}
+                    className="accent-accent"
+                  />
                   <span
                     className="h-0.5 w-6 rounded"
-                    style={{ background: c }}
+                    style={{ background: c, opacity: on ? 1 : 0.3 }}
                   />
-                  <span className="font-mono">{k}</span>
+                  <span className={clsx("font-mono", !on && "line-through opacity-50")}>{k}</span>
                   <span className="ml-auto font-mono text-[10px] text-text-dim">{n}</span>
-                </div>
+                </label>
               );
             })}
           </div>
