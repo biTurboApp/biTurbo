@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Memory } from "../lib/types";
-import { MEM_TYPE_META, timeAgo, shortDate, importanceDots, truncatePath, stripLeadingPathComment } from "../lib/format";
+import { MEM_TYPE_META, timeAgo, shortDate, importanceDots, truncatePath, stripLeadingPathComment, friendlyError } from "../lib/format";
 import { api } from "../lib/api";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { useApp, useConfirm } from "../lib/store";
 import { X, Trash2, Edit3, Save, FileCode2, Hash, ChevronDown, ChevronUp } from "lucide-react";
 import clsx from "clsx";
@@ -14,18 +15,42 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
   const [draftTags, setDraftTags] = useState(memory.tags.join(", "));
   const [draftImp, setDraftImp] = useState(memory.importance);
   const [related, setRelated] = useState<{ uid: string; content: string; score: number }[]>([]);
+  // Per-uid draft cache: switching memories mid-edit preserves unsaved
+  // changes instead of silently discarding them.
+  const draftCache = useRef(new Map<string, { content: string; tags: string; imp: number }>());
+  const baselineCache = useRef(new Map<string, { content: string; tags: string; imp: number }>());
+  const prevUidRef = useRef(memory.uid);
   const refreshMemories = useApp((s) => s.refreshMemories);
+  const refreshTags = useApp((s) => s.refreshTags);
   const refreshStats = useApp((s) => s.refreshStats);
   const showToast = useApp((s) => s.showToast);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
+  const selectMemoryByUid = useApp((s) => s.selectMemoryByUid);
   const confirm = useConfirm();
 
   useEffect(() => {
-    setDraft(memory.content);
-    setDraftTags(memory.tags.join(", "));
-    setDraftImp(memory.importance);
+    baselineCache.current.set(memory.uid, {
+      content: memory.content,
+      tags: memory.tags.join(", "),
+      imp: memory.importance,
+    });
+    const prevUid = prevUidRef.current;
+    if (prevUid === memory.uid) return;
+    const base = baselineCache.current.get(prevUid);
+    const wasDirty =
+      base != null &&
+      (draft !== base.content || draftTags !== base.tags || draftImp !== base.imp);
+    if (wasDirty) {
+      draftCache.current.set(prevUid, { content: draft, tags: draftTags, imp: draftImp });
+      showToast({ kind: "info", text: "Unsaved edits kept as draft" });
+    }
+    const saved = draftCache.current.get(memory.uid);
+    setDraft(saved ? saved.content : memory.content);
+    setDraftTags(saved ? saved.tags : memory.tags.join(", "));
+    setDraftImp(saved ? saved.imp : memory.importance);
     setEditing(false);
     setExpanded(false);
+    prevUidRef.current = memory.uid;
   }, [memory.uid]);
 
   useEffect(() => {
@@ -63,7 +88,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
       showToast({ kind: "ok", text: "Saved" });
       setEditing(false);
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -77,10 +102,11 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
     try {
       await api.forget(memory.uid);
       setSelected(null);
+      await refreshTags();
       await Promise.all([refreshMemories(), refreshStats()]);
       showToast({ kind: "ok", text: "Forgotten" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -119,7 +145,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
             </span>
           </div>
         </div>
-        <button onClick={onClose} className="btn-ghost p-1.5">
+        <button onClick={onClose} className="btn-ghost p-1.5" aria-label="Close details" title="Close">
           <X size={14} />
         </button>
       </div>
@@ -169,7 +195,16 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
 
         {/* Code location */}
         {memory.mem_type === "code" && memory.file_path && (
-          <div className="code-chip mt-3 py-1.5 text-[12px]" title={memory.file_path}>
+          <button
+            type="button"
+            onClick={() => {
+              shellOpen(memory.file_path as string).catch((e) => {
+                showToast({ kind: "err", text: `Could not open file: ${String(e)}` });
+              });
+            }}
+            className="code-chip mt-3 w-full py-1.5 text-left text-[12px] transition hover:border-accent/50"
+            title={`Open ${memory.file_path} in the default app`}
+          >
             <FileCode2 size={12} className="shrink-0" />
             <span className="code-chip-path">{truncatePath(memory.file_path, 56)}</span>
             {memory.start_line && (
@@ -183,7 +218,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
             {memory.language && (
               <span className="code-chip-lang">{memory.language}</span>
             )}
-          </div>
+          </button>
         )}
 
         {/* Tags */}
@@ -269,12 +304,20 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
               {related.map((r) => (
                 <button
                   key={r.uid}
-                  onClick={() => setSelected(r.uid)}
+                  onClick={() => void selectMemoryByUid(r.uid)}
                   className="block w-full rounded-md border border-border-subtle bg-surface p-2 text-left text-[11px] text-text-muted transition hover:border-border hover:bg-surface-2"
                 >
                   <div className="line-clamp-2 text-pretty">{r.content}</div>
-                  <div className="mt-1 font-mono text-[10px] text-text-dim">
-                    score {r.score.toFixed(3)}
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <div className="h-1 w-12 overflow-hidden rounded-full bg-surface-2">
+                      <div
+                        className="h-full bg-accent"
+                        style={{ width: `${Math.round(Math.min(1, Math.max(0, r.score)) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="font-mono text-[10px] text-text-dim">
+                      {Math.round(r.score * 100)}% match
+                    </span>
                   </div>
                 </button>
               ))}

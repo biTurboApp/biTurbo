@@ -32,6 +32,7 @@ export function Settings() {
   const [copied, setCopied] = useState<string | null>(null);
   const [resolvedDataDir, setResolvedDataDir] = useState<string | null>(null);
   const [mcpBinary, setMcpBinary] = useState<{ path: string; is_absolute: boolean } | null>(null);
+  const [ruleProjectId, setRuleProjectId] = useState<string | null>(null);
   const [launchOnBoot, setLaunchOnBoot] = useState(false);
   const [bootLoading, setBootLoading] = useState(true);
   const [bootSaving, setBootSaving] = useState(false);
@@ -62,11 +63,8 @@ export function Settings() {
       .then(setMcpBinary)
       .catch(() => setMcpBinary(null));
   }, []);
-
-  const project = projects.find((p) => p.id === currentProjectId);
-
   const projectRule = useMemo(() => {
-    const pid = currentProjectId;
+    const pid = ruleProjectId ?? currentProjectId;
     const start = "\u003c!-- biturbo-rule:start project=\"" + pid + "\" --\u003e";
     const end = "\u003c!-- biturbo-rule:end --\u003e";
     return `${start}
@@ -119,7 +117,7 @@ You have access to biTurbo, a persistent semantic memory layer via MCP.
 - Don't cross-project leak — always pass the resolved \`project_id=PID\`
 - Never store secrets, tokens, PII
 ${end}`;
-  }, [currentProjectId]);
+  }, [currentProjectId, ruleProjectId]);
 
   const globalRule = useMemo(() => {
     const start = "\u003c!-- biturbo-rule:start scope=\"global\" --\u003e";
@@ -226,6 +224,16 @@ ${end}`;
     "Linux:   ~/.local/share/com.biturbo.app",
   ].join("\n");
 
+  // The backend resolves the bundled binary's absolute path; fall back to
+  // the bare name (PATH lookup) when resolution is unavailable.
+  const [mcpBinary, setMcpBinary] = useState<{ path: string; is_absolute: boolean } | null>(null);
+  useEffect(() => {
+    api
+      .resolveMcpBinaryPath()
+      .then(setMcpBinary)
+      .catch(() => setMcpBinary(null));
+  }, []);
+
   const mcpConfig = `{
   "mcpServers": {
     "biturbo": {
@@ -293,6 +301,7 @@ ${end}`;
             type="button"
             role="switch"
             aria-checked={launchOnBoot}
+            aria-label="Launch on startup"
             disabled={bootLoading || bootSaving}
             onClick={toggleLaunchOnBoot}
             className={clsx(
@@ -483,15 +492,32 @@ ${end}`;
           behavior rules.
         </p>
 
+        <div className="mt-4">
+          <label className="mb-1 block text-[10px] uppercase tracking-widest text-text-dim">
+            Project for the rule block
+          </label>
+          <select
+            value={ruleProjectId ?? currentProjectId}
+            onChange={(e) => setRuleProjectId(e.target.value)}
+            className="input w-64"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.id})
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="mt-4 space-y-4">
           <RuleBlock
-            label={`project · ${currentProjectId}`}
+            label={`project · ${ruleProjectId ?? currentProjectId}`}
             text={projectRule}
             copied={copied === "project"}
             onCopy={() => copy("project rule", projectRule)}
             hint={
-              project
-                ? `Paste in the root of your ${currentProjectId} repo.`
+              projects.some((p) => p.id === (ruleProjectId ?? currentProjectId))
+                ? `Paste in the root of your ${ruleProjectId ?? currentProjectId} repo.`
                 : "No active project — defaults to your current selection."
             }
           />
