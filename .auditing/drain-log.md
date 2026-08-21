@@ -40,3 +40,13 @@ DRAIN: selected=111 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
 - Workspace: branch `drain/ux-3` (from origin/main @ a2829b0; PRs #549/#550 open, their 10 issues excluded)
 - Selection (106 open excl. pending-PR issues): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
 - Batch (P1→P3, budget 5): #21, #29, #46, #73, #94
+- Outcomes:
+  - #21 fixed (8319f46) — detail drawer below lg; 900px overlay + close, 1280px side column verified
+  - #29 fixed (8319f46) — filters reset on project switch; chip/slider state verified across switch
+  - #46 fixed (be94a63) — per-uid draft cache; dirty-switch toast + restore verified
+  - #73 fixed (043527a) — zero-projects empty state; CTA opens create form verified
+  - #94 fixed (6616f03) — activity window 60→1000; "400 recent" + 79/84 cells filled verified (interim; backend aggregation still noted in ticket)
+- PR: https://github.com/biTurboApp/biTurbo/pull/551 (merge closes all five)
+- Notes: temp ?uiproof shim removed before commit. drain-log.md rode along in the #21 commit.
+
+DRAIN: selected=106 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
