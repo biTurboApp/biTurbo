@@ -7,6 +7,7 @@ import { Search, X, FileCode2, Hash, ExternalLink, Copy, Trash2 } from "lucide-r
 import type { ContextMenuItem } from "../components/ContextMenu";
 import type { ExplainedMemory, RecallExplanation } from "../lib/types";
 import clsx from "clsx";
+import { friendlyError } from "../lib/format";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection", "code"] as const;
 const SEARCH_DEBOUNCE_MS = 180;
@@ -15,6 +16,7 @@ export function Memories() {
   const memories = useApp((s) => s.memories);
   const selectedUid = useApp((s) => s.selectedMemoryUid);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
+  const hydratedSelected = useApp((s) => s.hydratedSelected);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const showToast = useApp((s) => s.showToast);
   const refreshMemories = useApp((s) => s.refreshMemories);
@@ -23,6 +25,9 @@ export function Memories() {
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
+conflict://3
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
   const [results, setResults] = useState<ExplainedMemory[]>([]);
   const [recallId, setRecallId] = useState<string | null>(null);
   const [explanations, setExplanations] = useState<Record<string, RecallExplanation>>({});
@@ -35,6 +40,14 @@ export function Memories() {
   const tags = useApp((s) => s.tags);
   const memoryOffset = useApp((s) => s.memoryOffset);
 
+  // Filters are project-scoped: a tag/type filter that matches one project
+  // can blank out another's list, so reset them on project switch.
+  useEffect(() => {
+    setActiveTypes(new Set());
+    setActiveTags(new Set());
+    setMinImportance(0);
+  }, [currentProjectId]);
+
   async function handleLoadMore() {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
@@ -42,13 +55,17 @@ export function Memories() {
   }
 
   const selected = useMemo(
-    () => memories.find((m) => m.uid === selectedUid) ?? results.find((m) => m.uid === selectedUid),
-    [memories, results, selectedUid]
+    () =>
+      memories.find((m) => m.uid === selectedUid) ??
+      results.find((m) => m.uid === selectedUid) ??
+      (selectedUid && hydratedSelected?.uid === selectedUid ? hydratedSelected : null),
+    [memories, results, selectedUid, hydratedSelected]
   );
 
   const searchSeq = useRef(0);
   useEffect(() => {
     const trimmed = query.trim();
+    setSearchError(null);
     if (!trimmed) {
       setResults([]);
       setRecallId(null);
@@ -73,13 +90,20 @@ export function Memories() {
               Object.fromEntries(response.results.map((hit) => [hit.uid, hit.explanation])),
             );
           }
+        } catch (err) {
+          if (seq === searchSeq.current) {
+            setResults([]);
+            setRecallId(null);
+            setExplanations({});
+            setSearchError(err instanceof Error ? err.message : String(err));
+          }
         } finally {
           if (seq === searchSeq.current) setSearching(false);
         }
       })();
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, currentProjectId]);
+  }, [query, currentProjectId, retryToken]);
 
   const visible = useMemo(() => {
     const source = query.trim() ? results : memories;
@@ -158,7 +182,7 @@ export function Memories() {
             if (selectedUid === m.uid) setSelected(null);
             showToast({ kind: "ok", text: "Forgotten" });
           } catch (e) {
-            showToast({ kind: "err", text: String(e) });
+            showToast({ kind: "err", text: friendlyError(e) });
           }
         },
       },
@@ -277,10 +301,58 @@ export function Memories() {
           {searching && (
             <div className="mb-3 text-xs text-text-dim">Searching…</div>
           )}
-          {visible.length === 0 ? (
+conflict://1
+          {searchError && (
+            <div
+              role="alert"
+              className="mb-3 flex items-center gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"
+            >
+              <span className="min-w-0 flex-1 truncate" title={searchError}>
+                Search failed: {searchError}
+              </span>
+              <button
+                onClick={() => setRetryToken((t) => t + 1)}
+                className="btn-outline shrink-0 px-2 py-0.5 text-[11px]"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {visible.length === 0 && query.trim() ? (
+            <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
+              <Search size={24} className="mb-2 opacity-50" />
+              <div className="text-sm">No results for “{query.trim()}”.</div>
+              <button
+                onClick={() => setQuery("")}
+                className="btn-outline mt-3 px-2 py-1 text-xs"
+              >
+                Clear search
+              </button>
+            </div>
+          ) : visible.length === 0 && (activeTypes.size > 0 || activeTags.size > 0 || minImportance > 0) ? (
             <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
               <FileCode2 size={24} className="mb-2 opacity-50" />
-              <div className="text-sm">No memories match.</div>
+              <div className="text-sm">
+                No memories match the active filters
+                {activeTypes.size + activeTags.size > 0 &&
+                  ` (${[...activeTypes, ...activeTags].length} active)`}
+                .
+              </div>
+              <button
+                onClick={() => {
+                  setActiveTypes(new Set());
+                  setActiveTags(new Set());
+                  setMinImportance(0);
+                }}
+                className="btn-outline mt-3 px-2 py-1 text-xs"
+              >
+                Clear all filters
+              </button>
+            </div>
+          ) : visible.length === 0 ? (
+            <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
+              <FileCode2 size={24} className="mb-2 opacity-50" />
+              <div className="text-sm">No memories in this project yet.</div>
               <div className="mt-1 text-xs">
                 Press <span className="kbd">⌘K</span> to add one.
               </div>
@@ -353,6 +425,13 @@ export function Memories() {
           </div>
         )}
       </div>
+
+      {/* Detail as overlay below lg, where the column is hidden */}
+      {selected && (
+        <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md border-l border-border-subtle bg-surface shadow-modal lg:hidden">
+          <MemoryDetail memory={selected} onClose={() => setSelected(null)} />
+        </div>
+      )}
     </div>
   );
 }

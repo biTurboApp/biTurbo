@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useApp } from "../lib/store";
 import { api } from "../lib/api";
 import { Bot, Plus, RefreshCw } from "lucide-react";
-import { timeAgo } from "../lib/format";
+import { timeAgo, friendlyError } from "../lib/format";
 
 const KINDS = ["mavis", "claude-code", "cursor", "cline", "custom"];
 
@@ -24,7 +24,7 @@ export function Agents() {
       await refreshAgents();
       showToast({ kind: "ok", text: `Registered ${name}` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(false);
     }
