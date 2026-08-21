@@ -207,10 +207,20 @@ ${end}`;
     "Linux:   ~/.local/share/com.biturbo.app",
   ].join("\n");
 
+  // The backend resolves the bundled binary's absolute path; fall back to
+  // the bare name (PATH lookup) when resolution is unavailable.
+  const [mcpBinary, setMcpBinary] = useState<{ path: string; is_absolute: boolean } | null>(null);
+  useEffect(() => {
+    api
+      .resolveMcpBinaryPath()
+      .then(setMcpBinary)
+      .catch(() => setMcpBinary(null));
+  }, []);
+
   const mcpConfig = `{
   "mcpServers": {
     "biturbo": {
-      "command": "biturbo-mcp",
+      "command": "${mcpBinary?.path ?? "biturbo-mcp"}",
       "args": [],
       "env": {}
     }
@@ -253,6 +263,7 @@ ${end}`;
             type="button"
             role="switch"
             aria-checked={launchOnBoot}
+            aria-label="Launch on startup"
             disabled={bootLoading || bootSaving}
             onClick={toggleLaunchOnBoot}
             className={clsx(
@@ -327,12 +338,17 @@ ${end}`;
         <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 font-mono text-xs text-text-muted">
 {mcpConfig}
         </pre>
+        {mcpBinary && (
+          <p className="mt-2 text-xs text-text-dim">
+            Resolved binary on this device:{" "}
+            <span className="kbd">{mcpBinary.path}</span>{" "}
+            {mcpBinary.is_absolute ? "(absolute — safe to use as-is)" : "(resolved via PATH)"}
+          </p>
+        )}
         <p className="mt-2 text-xs text-text-dim">
-          If <span className="kbd">biturbo-mcp</span> isn't on your <span className="kbd">PATH</span>,
-          set <span className="kbd">command</span> to the absolute path instead — e.g.{" "}
-          <span className="kbd">/Applications/biTurbo.app/Contents/MacOS/biturbo-mcp</span> (macOS),{" "}
-          <span className="kbd">%LOCALAPPDATA%\\biTurbo\\biturbo-mcp.exe</span> (Windows), or{" "}
-          <span className="kbd">src-tauri/target/release/biturbo-mcp</span> (dev build).
+          If you edit the config by hand and <span className="kbd">biturbo-mcp</span> isn't on
+          your <span className="kbd">PATH</span>, set <span className="kbd">command</span> to the
+          absolute path instead.
         </p>
 
         <div className="mt-4">

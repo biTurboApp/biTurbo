@@ -15,6 +15,8 @@ interface MemoryCardProps {
   contextMenuItems?: ContextMenuItem[];
   explanation?: RecallExplanation;
   onFeedback?: (value: -1 | 1) => void;
+  /** Semantic relevance 0..1 — shown only for search hits. */
+  score?: number;
 }
 
 export const MemoryCard = memo(function MemoryCard({
@@ -25,6 +27,7 @@ export const MemoryCard = memo(function MemoryCard({
   contextMenuItems,
   explanation,
   onFeedback,
+  score,
 }: MemoryCardProps) {
   const meta = MEM_TYPE_META[memory.mem_type] ?? MEM_TYPE_META.fact;
   const dots = importanceDots(memory.importance);
@@ -41,11 +44,31 @@ export const MemoryCard = memo(function MemoryCard({
         }
       : undefined);
 
+  // Keyboard parity with mouse: Enter/Space activate, Shift+F10 or the
+  // Menu key opens the context menu at the card.
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick?.();
+      return;
+    }
+    if ((e.shiftKey && e.key === "F10") || e.key === "ContextMenu") {
+      e.preventDefault();
+      if (!contextMenuItems) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      showMenu(rect.left + rect.width / 2, rect.top + rect.height / 2, contextMenuItems);
+    }
+  }
+
   return (
     <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={handleKeyDown}
       onContextMenu={handleContext}
       className={clsx("memory-card", active && "active")}>
+
       <div className="mb-2 flex items-center gap-2">
         <span
           className={clsx(
@@ -62,7 +85,20 @@ export const MemoryCard = memo(function MemoryCard({
             superseded
           </span>
         )}
-        <span className="ml-auto font-mono text-[10px] text-text-dim">
+        {score != null && (
+          <span
+            title="Relevance"
+            className="ml-auto font-mono text-[10px] text-accent"
+          >
+            {Math.round(score * 100)}%
+          </span>
+        )}
+        <span
+          className={clsx(
+            "font-mono text-[10px] text-text-dim",
+            score == null && "ml-auto",
+          )}
+        >
           {timeAgo(memory.created_at)}
         </span>
       </div>

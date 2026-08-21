@@ -13,6 +13,7 @@ import { useApp, useConfirm, useContextMenu } from "../lib/store";
 import { api } from "../lib/api";
 import type { ContextMenuItem } from "./ContextMenu";
 import clsx from "clsx";
+import { friendlyError } from "../lib/format";
 
 const nav = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
@@ -126,10 +127,11 @@ function ProjectList() {
 
   async function ingestNow(projectId: string, rootPath: string) {
     try {
-      await api.ingestProject(projectId, rootPath);
+      const job = await api.ingestProject(projectId, rootPath);
+      useApp.getState().registerIngestJob(projectId, job.job_id);
       showToast({ kind: "ok", text: `Indexing ${projectId}…` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -150,7 +152,7 @@ function ProjectList() {
       await Promise.all([refreshProjects(), refreshStats(), refreshGraph().catch(() => {})]);
       showToast({ kind: "ok", text: "Deleted" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
