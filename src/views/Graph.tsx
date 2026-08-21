@@ -53,6 +53,7 @@ export function Graph() {
   const [filter, setFilter] = useState<Set<string>>(new Set(NODE_KINDS));
   const [query, setQuery] = useState("");
   const [hover, setHover] = useState<string | null>(null);
+  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
   const [posMap, setPosMap] = useState<Record<string, Pos>>({});
   const [layoutMs, setLayoutMs] = useState<number | null>(null);
   const [firstPaintMs, setFirstPaintMs] = useState<number | null>(null);
@@ -255,8 +256,11 @@ export function Graph() {
   function onMouseMoveHover(e: React.MouseEvent) {
     if (dragRef.current) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const uid = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const uid = hitTest(mx, my);
     setHover(uid);
+    setHoverPos(uid ? { x: mx, y: my } : null);
   }
 
   function onClick(e: React.MouseEvent) {
@@ -338,6 +342,35 @@ export function Graph() {
           onClick={onClick}
           onContextMenu={onContextMenu}
         />
+
+        {/* Hover info as a floating tooltip below lg, where the sidebar
+            (and its hover panel) is hidden. */}
+        {hoverNode && hoverPos && (
+          <div
+            className="pointer-events-none absolute z-10 max-w-xs rounded-md border border-border bg-surface/95 p-2 shadow-modal lg:hidden"
+            style={{
+              left: Math.min(hoverPos.x + 14, Math.max(8, size.w - 250)),
+              top: Math.max(8, hoverPos.y - 56),
+            }}
+          >
+            <div className="mb-1 flex items-center gap-2">
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ background: KIND_COLORS[hoverNode.kind as NodeKind]?.fill }}
+              />
+              <span className="text-[10px] uppercase tracking-widest text-text-dim">
+                {hoverNode.kind}
+              </span>
+            </div>
+            <div className="font-serif text-sm text-text">{hoverNode.label}</div>
+            {hoverNode.file_path && (
+              <div className="mt-1 truncate font-mono text-[10px] text-text-dim">
+                {hoverNode.file_path}
+                {hoverNode.start_line ? `:${hoverNode.start_line}` : ""}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Controls */}
         <div className="pointer-events-none absolute inset-0 flex flex-col">
