@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
 import { api } from "../lib/api";
 import { X, Plus } from "lucide-react";
@@ -13,12 +13,21 @@ export function QuickAdd() {
   const refreshMemories = useApp((s) => s.refreshMemories);
   const refreshStats = useApp((s) => s.refreshStats);
   const showToast = useApp((s) => s.showToast);
+  const projects = useApp((s) => s.projects);
+  const knownTags = useApp((s) => s.tags);
 
   const [content, setContent] = useState("");
   const [type, setType] = useState<(typeof TYPES)[number]>("fact");
   const [tags, setTags] = useState("");
   const [importance, setImportance] = useState(0.5);
   const [busy, setBusy] = useState(false);
+  // Defaults to the active project; switchable so a memory never lands in
+  // the wrong project silently.
+  const [projectId, setProjectId] = useState(currentProjectId);
+
+  useEffect(() => {
+    if (open) setProjectId(currentProjectId);
+  }, [open, currentProjectId]);
 
   if (!open) return null;
 
@@ -29,7 +38,7 @@ export function QuickAdd() {
       await api.remember({
         content: content.trim(),
         mem_type: type,
-        project_id: currentProjectId,
+        project_id: projectId,
         tags: tags
           .split(",")
           .map((s) => s.trim())
@@ -108,7 +117,13 @@ export function QuickAdd() {
                 onChange={(e) => setTags(e.target.value)}
                 placeholder="tags, comma, separated"
                 className="input w-48 py-1 text-xs"
+                list="quickadd-known-tags"
               />
+              <datalist id="quickadd-known-tags">
+                {knownTags.map(([t]) => (
+                  <option key={t} value={t} />
+                ))}
+              </datalist>
               <div className="flex items-center gap-2">
                 <span className="font-mono text-[10px] text-text-dim">imp</span>
                 <input
@@ -129,8 +144,21 @@ export function QuickAdd() {
         </div>
 
         <div className="flex items-center justify-between border-t border-border-subtle px-4 py-3">
-          <div className="font-mono text-[10px] text-text-dim">
-            {content.length} chars · project: {currentProjectId}
+          <div className="flex items-center gap-2 font-mono text-[10px] text-text-dim">
+            <span>{content.length} chars</span>
+            <span>·</span>
+            <select
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="bg-transparent font-mono text-[10px] text-text-muted outline-none"
+              aria-label="Target project"
+            >
+              {projects.map((prj) => (
+                <option key={prj.id} value={prj.id}>
+                  {prj.name}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex items-center gap-2">
             <span className="kbd">⌘⏎</span>
