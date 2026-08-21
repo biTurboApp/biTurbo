@@ -108,3 +108,13 @@ DRAIN: selected=91 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
 - Workspace: branch `drain/ux-7` (from origin/main @ a2829b0; PRs #549–#554 open, their 30 issues excluded)
 - Selection (86 open excl. pending-PR issues): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
 - Batch (P1→P3, budget 5): #55, #79, #119, #118, #52
+- Outcomes:
+  - #55 fixed (62256e4) — QuickAdd code type + file fields; remember args verified (code/src/auth/login.ts/42)
+  - #79 fixed (c885954) — node search counter; 2/2, 1/2, 0/2 verified
+  - #119 fixed (6f5607b) — icon-button sweep; 0 unlabeled across Agents/Memories/Graph
+  - #118 fixed (bbc9b75) — shared phase labels; TopBar "Scanning project…" verified
+  - #52 fixed (8812da0) — related % bars; 71%/55% + raw score gone verified
+- PR: https://github.com/biTurboApp/biTurbo/pull/555 (merge closes all five)
+- Notes: temp ?uiproof shim removed before commit.
+
+DRAIN: selected=86 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
