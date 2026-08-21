@@ -339,6 +339,19 @@ export function Graph() {
           onContextMenu={onContextMenu}
         />
 
+        {data && data.nodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-12 text-center">
+            <div>
+              <div className="font-serif text-lg text-text-muted">No nodes to display</div>
+              <div className="mt-1 text-sm text-text-muted">
+                {filter.size < NODE_KINDS.length
+                  ? "All node kinds are filtered out — re-enable them in the sidebar."
+                  : "This project has no indexed code yet."}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Controls */}
         <div className="pointer-events-none absolute inset-0 flex flex-col">
           <div className="pointer-events-auto flex items-center gap-2 border-b border-border-subtle bg-bg/80 p-3 backdrop-blur">
