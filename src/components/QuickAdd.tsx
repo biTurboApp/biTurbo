@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import { X, Plus } from "lucide-react";
 import clsx from "clsx";
 
-const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection"] as const;
+const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection", "code"] as const;
 
 export function QuickAdd() {
   const open = useApp((s) => s.quickAddOpen);
@@ -19,6 +19,8 @@ export function QuickAdd() {
   const [tags, setTags] = useState("");
   const [importance, setImportance] = useState(0.5);
   const [busy, setBusy] = useState(false);
+  const [filePath, setFilePath] = useState("");
+  const [startLine, setStartLine] = useState("");
 
   if (!open) return null;
 
@@ -36,11 +38,15 @@ export function QuickAdd() {
           .filter(Boolean),
         importance,
         source_agent: "human",
+        file_path: type === "code" && filePath.trim() ? filePath.trim() : null,
+        start_line: type === "code" && startLine.trim() ? Number(startLine.trim()) : null,
       });
       setContent("");
       setTags("");
       setImportance(0.5);
       setType("fact");
+      setFilePath("");
+      setStartLine("");
       setOpen(false);
       await refreshMemories();
       await refreshStats();
@@ -51,6 +57,7 @@ export function QuickAdd() {
       setBusy(false);
     }
   }
+
 
   return (
     <div
@@ -66,7 +73,7 @@ export function QuickAdd() {
             <span>Remember</span>
             <span className="font-mono text-[10px] text-text-dim">⌘K</span>
           </div>
-          <button onClick={() => setOpen(false)} className="btn-ghost p-1.5">
+          <button onClick={() => setOpen(false)} className="btn-ghost p-1.5" aria-label="Close" title="Close">
             <X size={14} />
           </button>
         </div>
@@ -101,6 +108,23 @@ export function QuickAdd() {
                 </button>
               ))}
             </div>
+            {type === "code" && (
+              <div className="flex w-full items-center gap-2">
+                <input
+                  value={filePath}
+                  onChange={(e) => setFilePath(e.target.value)}
+                  placeholder="file path (src/auth/login.ts)"
+                  className="input flex-1 py-1 font-mono text-xs"
+                />
+                <input
+                  value={startLine}
+                  onChange={(e) => setStartLine(e.target.value.replace(/[^0-9]/g, ""))}
+                  placeholder="line"
+                  className="input w-20 py-1 text-xs"
+                  inputMode="numeric"
+                />
+              </div>
+            )}
 
             <div className="ml-auto flex items-center gap-3">
               <input
