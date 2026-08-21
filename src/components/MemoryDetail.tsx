@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Memory } from "../lib/types";
 import { MEM_TYPE_META, timeAgo, shortDate, importanceDots, truncatePath, stripLeadingPathComment } from "../lib/format";
 import { api } from "../lib/api";
@@ -14,6 +14,11 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
   const [draftTags, setDraftTags] = useState(memory.tags.join(", "));
   const [draftImp, setDraftImp] = useState(memory.importance);
   const [related, setRelated] = useState<{ uid: string; content: string; score: number }[]>([]);
+  // Per-uid draft cache: switching memories mid-edit preserves unsaved
+  // changes instead of silently discarding them.
+  const draftCache = useRef(new Map<string, { content: string; tags: string; imp: number }>());
+  const baselineCache = useRef(new Map<string, { content: string; tags: string; imp: number }>());
+  const prevUidRef = useRef(memory.uid);
   const refreshMemories = useApp((s) => s.refreshMemories);
   const refreshStats = useApp((s) => s.refreshStats);
   const showToast = useApp((s) => s.showToast);
@@ -22,11 +27,28 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
   const confirm = useConfirm();
 
   useEffect(() => {
-    setDraft(memory.content);
-    setDraftTags(memory.tags.join(", "));
-    setDraftImp(memory.importance);
+    baselineCache.current.set(memory.uid, {
+      content: memory.content,
+      tags: memory.tags.join(", "),
+      imp: memory.importance,
+    });
+    const prevUid = prevUidRef.current;
+    if (prevUid === memory.uid) return;
+    const base = baselineCache.current.get(prevUid);
+    const wasDirty =
+      base != null &&
+      (draft !== base.content || draftTags !== base.tags || draftImp !== base.imp);
+    if (wasDirty) {
+      draftCache.current.set(prevUid, { content: draft, tags: draftTags, imp: draftImp });
+      showToast({ kind: "info", text: "Unsaved edits kept as draft" });
+    }
+    const saved = draftCache.current.get(memory.uid);
+    setDraft(saved ? saved.content : memory.content);
+    setDraftTags(saved ? saved.tags : memory.tags.join(", "));
+    setDraftImp(saved ? saved.imp : memory.importance);
     setEditing(false);
     setExpanded(false);
+    prevUidRef.current = memory.uid;
   }, [memory.uid]);
 
   useEffect(() => {

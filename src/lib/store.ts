@@ -148,8 +148,7 @@ export const useApp = create<AppStore>((set, get) => ({
   refreshStats: async () => set({ stats: await api.stats() }),
 
   activity: [],
-  refreshActivity: async () => set({ activity: await api.recentActivity(60) }),
-
+  refreshActivity: async () => set({ activity: await api.recentActivity(1000) }),
   searchQuery: "",
   setSearchQuery: (q) => set({ searchQuery: q }),
 
