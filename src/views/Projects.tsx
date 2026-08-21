@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp, useConfirm } from "../lib/store";
 import { api } from "../lib/api";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -163,19 +163,28 @@ export function Projects() {
     }
   }
 
-  async function setModel(projectId: string, current: string | null) {
-    const input = prompt(
-      `Embedding model for "${projectId}" (BGE-small-en-v1.5, BGE-base-en-v1.5, BGE-large-en-v1.5, all-MiniLM-L6-v2). Leave empty to clear.`,
-      current ?? ""
-    );
-    if (input === null) return;
-    const model = input.trim() === "" ? null : input.trim();
+  const [modelEdit, setModelEdit] = useState<{
+    id: string;
+    name: string;
+    current: string | null;
+  } | null>(null);
+  const [modelSaving, setModelSaving] = useState(false);
+
+  async function saveModel(model: string | null) {
+    if (!modelEdit) return;
+    setModelSaving(true);
     try {
-      await api.setProjectEmbedModel(projectId, model);
+      await api.setProjectEmbedModel(modelEdit.id, model);
       await refreshProjects();
-      showToast({ kind: "ok", text: model ? `Set model to ${model}` : "Cleared model preference" });
+      showToast({
+        kind: "ok",
+        text: model ? `Set model to ${model}` : "Cleared model preference",
+      });
+      setModelEdit(null);
     } catch (e) {
       showToast({ kind: "err", text: String(e) });
+    } finally {
+      setModelSaving(false);
     }
   }
 
@@ -432,7 +441,9 @@ export function Projects() {
                   </button>
                 )}
                 <button
-                  onClick={() => setModel(p.id, p.embed_model)}
+                  onClick={() =>
+                    setModelEdit({ id: p.id, name: p.name, current: p.embed_model })
+                  }
                   className="btn-outline"
                   title="Set preferred embedding model for this project"
                 >
@@ -460,6 +471,126 @@ export function Projects() {
             </div>
           );
         })}
+      </div>
+      {modelEdit && (
+        <EmbedModelModal
+          projectId={modelEdit.name}
+          current={modelEdit.current}
+          saving={modelSaving}
+          onSave={saveModel}
+          onClose={() => setModelEdit(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+const EMBED_MODELS = [
+  { id: "BGE-small-en-v1.5", hint: "384 dims · fast, low memory" },
+  { id: "BGE-base-en-v1.5", hint: "768 dims · balanced" },
+  { id: "BGE-large-en-v1.5", hint: "1024 dims · highest quality" },
+  { id: "all-MiniLM-L6-v2", hint: "384 dims · fast" },
+] as const;
+
+function EmbedModelModal({
+  projectId,
+  current,
+  saving,
+  onSave,
+  onClose,
+}: {
+  projectId: string;
+  current: string | null;
+  saving: boolean;
+  onSave: (model: string | null) => void;
+  onClose: () => void;
+}) {
+  const [selected, setSelected] = useState<string | null>(current);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Move focus into the dialog so Escape and screen readers catch it.
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4 backdrop-blur-sm animate-backdrop_in"
+      onClick={() => {
+        if (!saving) onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !saving) onClose();
+      }}
+    >
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="embed-model-title"
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-lg border border-border bg-surface shadow-modal outline-none animate-modal_in"
+      >
+        <div className="border-b border-border-subtle p-5">
+          <h3 id="embed-model-title" className="font-serif text-lg text-text">
+            Embedding model
+          </h3>
+          <p className="mt-1 text-xs text-text-muted">
+            Model used to embed new memories and code chunks for{" "}
+            <span className="font-medium text-text">{projectId}</span>. Changing it applies to
+            the next index run.
+          </p>
+        </div>
+
+        <div className="space-y-1 p-3" role="radiogroup" aria-label="Embedding model">
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-2">
+            <input
+              type="radio"
+              name="embed-model"
+              checked={selected === null}
+              onChange={() => setSelected(null)}
+              className="mt-0.5 accent-accent"
+            />
+            <span>
+              <span className="block text-sm text-text">Project default</span>
+              <span className="block text-[11px] text-text-dim">
+                Clear the override — use the app-wide default
+              </span>
+            </span>
+          </label>
+          {EMBED_MODELS.map((m) => (
+            <label
+              key={m.id}
+              className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-2"
+            >
+              <input
+                type="radio"
+                name="embed-model"
+                checked={selected === m.id}
+                onChange={() => setSelected(m.id)}
+                className="mt-0.5 accent-accent"
+              />
+              <span>
+                <span className="block font-mono text-sm text-text">{m.id}</span>
+                <span className="block text-[11px] text-text-dim">{m.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-5 py-3">
+          <button onClick={onClose} disabled={saving} className="btn-outline">
+            Cancel
+          </button>
+          <button
+            onClick={() => onSave(selected)}
+            disabled={saving || selected === current}
+            className="btn-primary"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
       </div>
     </div>
   );

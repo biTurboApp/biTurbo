@@ -23,6 +23,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
   const refreshStats = useApp((s) => s.refreshStats);
   const showToast = useApp((s) => s.showToast);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
+  const selectMemoryByUid = useApp((s) => s.selectMemoryByUid);
   const confirm = useConfirm();
 
   useEffect(() => {
@@ -291,7 +292,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
               {related.map((r) => (
                 <button
                   key={r.uid}
-                  onClick={() => setSelected(r.uid)}
+                  onClick={() => void selectMemoryByUid(r.uid)}
                   className="block w-full rounded-md border border-border-subtle bg-surface p-2 text-left text-[11px] text-text-muted transition hover:border-border hover:bg-surface-2"
                 >
                   <div className="line-clamp-2 text-pretty">{r.content}</div>
