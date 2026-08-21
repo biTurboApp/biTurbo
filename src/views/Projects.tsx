@@ -193,6 +193,21 @@ export function Projects() {
         </button>
       </div>
 
+      {projects.length === 0 && !creating && (
+        <div className="card flex flex-col items-center justify-center p-12 text-center">
+          <FolderGit2 size={28} className="mb-3 text-text-dim" />
+          <div className="font-serif text-lg">No projects yet</div>
+          <p className="mt-1 max-w-md text-sm text-text-muted">
+            Projects isolate memories and the code index per repository. Create your first
+            project, point it at a repo, and run Re-index — then connect an agent via
+            Settings → MCP.
+          </p>
+          <button onClick={() => setCreating(true)} className="btn-primary mt-4">
+            <Plus size={14} /> Create your first project
+          </button>
+        </div>
+      )}
+
       {activeIngest && (
         <div className="card p-4">
           <div className="mb-2 flex items-center gap-2 text-sm">
