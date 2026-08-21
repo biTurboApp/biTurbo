@@ -123,6 +123,11 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
     ? bodyContent.split("\n").length > CODE_COLLAPSE_LINES
     : bodyContent.length > TEXT_COLLAPSE_CHARS || bodyContent.split("\n").length > TEXT_COLLAPSE_LINES;
   const collapsed = isCollapsible && !expanded;
+  const dirty =
+    editing &&
+    (draft !== memory.content ||
+      draftTags !== memory.tags.join(", ") ||
+      draftImp !== memory.importance);
 
   return (
     <div className="flex h-full flex-col">
@@ -156,6 +161,12 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                void save();
+              }
+            }}
             rows={8}
             className="input resize-none font-sans text-sm"
             autoFocus
@@ -330,6 +341,11 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
       <div className="flex items-center gap-2 border-t border-border-subtle p-3">
         {editing ? (
           <>
+            {dirty && (
+              <span className="text-[10px] uppercase tracking-widest text-warning">
+                Unsaved
+              </span>
+            )}
             <button onClick={save} className="btn-primary flex-1">
               <Save size={14} /> Save
             </button>

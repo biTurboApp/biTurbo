@@ -361,9 +361,10 @@ ${end}`;
           <Row k="Quantization" v="turbovec 4-bit (16× compression vs float32)" />
         </div>
         <p className="mt-3 text-xs text-text-dim">
-          To change the model, edit <span className="kbd">src-tauri/src/state.rs</span> →
-          <span className="kbd ml-1">Embedder::new(...)</span>. Supported: BGE-small-en, BGE-base-en,
-          BGE-large-en, BGE-M3, all-MiniLM-L6-v2.
+          The app-wide default is <span className="kbd">BGE-small-en-v1.5</span> (384 dims).
+          Per-project overrides can be set from each project's card on the{" "}
+          <span className="kbd">Projects</span> page. Supported models: BGE-small-en, BGE-base-en,
+          BGE-large-en, all-MiniLM-L6-v2.
         </p>
       </Section>
 
