@@ -34,6 +34,17 @@ export function Memories() {
   const loadMore = useApp((s) => s.loadMoreMemories);
   const tags = useApp((s) => s.tags);
   const memoryOffset = useApp((s) => s.memoryOffset);
+  const pendingTypeFilter = useApp((s) => s.pendingTypeFilter);
+  const setTypeFilter = useApp((s) => s.setTypeFilter);
+
+  // A type clicked on Overview pre-applies here, then clears.
+  useEffect(() => {
+    if (!pendingTypeFilter) return;
+    setActiveTypes(new Set([pendingTypeFilter]));
+    setActiveTags(new Set());
+    setMinImportance(0);
+    setTypeFilter(null);
+  }, [pendingTypeFilter, setTypeFilter]);
 
   async function handleLoadMore() {
     if (loadingMore || !hasMore) return;

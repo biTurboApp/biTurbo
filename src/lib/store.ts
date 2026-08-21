@@ -40,6 +40,9 @@ interface AppStore {
 
   searchQuery: string;
   setSearchQuery: (q: string) => void;
+  /** Type picked on Overview; Memories consumes and clears it. */
+  pendingTypeFilter: string | null;
+  setTypeFilter: (t: string | null) => void;
 
   tags: [string, number][];
   refreshTags: () => Promise<void>;
@@ -144,6 +147,9 @@ export const useApp = create<AppStore>((set, get) => ({
 
   searchQuery: "",
   setSearchQuery: (q) => set({ searchQuery: q }),
+  pendingTypeFilter: null,
+  setTypeFilter: (t) => set({ pendingTypeFilter: t }),
+
 
   tags: [],
   refreshTags: async () => {
