@@ -5,8 +5,9 @@ import { MemoryCard } from "../components/MemoryCard";
 import { MemoryDetail } from "../components/MemoryDetail";
 import { Search, X, FileCode2, Hash, ExternalLink, Copy, Trash2 } from "lucide-react";
 import type { ContextMenuItem } from "../components/ContextMenu";
-import type { RecallExplanation } from "../lib/types";
+import type { ExplainedMemory, RecallExplanation } from "../lib/types";
 import clsx from "clsx";
+import { friendlyError } from "../lib/format";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection", "code"] as const;
 const SEARCH_DEBOUNCE_MS = 180;
@@ -15,15 +16,20 @@ export function Memories() {
   const memories = useApp((s) => s.memories);
   const selectedUid = useApp((s) => s.selectedMemoryUid);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
+  const hydratedSelected = useApp((s) => s.hydratedSelected);
   const currentProjectId = useApp((s) => s.currentProjectId);
-  const showToast = useApp((s) => s.showToast);
   const refreshMemories = useApp((s) => s.refreshMemories);
+  const refreshTags = useApp((s) => s.refreshTags);
+  const showToast = useApp((s) => s.showToast);
   const refreshStats = useApp((s) => s.refreshStats);
   const confirm = useConfirm();
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
-  const [results, setResults] = useState<typeof memories>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
+  const [results, setResults] = useState<ExplainedMemory[]>([]);
+  const [searchK, setSearchK] = useState(50);
   const [recallId, setRecallId] = useState<string | null>(null);
   const [explanations, setExplanations] = useState<Record<string, RecallExplanation>>({});
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
@@ -36,6 +42,25 @@ export function Memories() {
   const loadMore = useApp((s) => s.loadMoreMemories);
   const tags = useApp((s) => s.tags);
   const memoryOffset = useApp((s) => s.memoryOffset);
+  const pendingTypeFilter = useApp((s) => s.pendingTypeFilter);
+  const setTypeFilter = useApp((s) => s.setTypeFilter);
+
+  // A type clicked on Overview pre-applies here, then clears.
+  useEffect(() => {
+    if (!pendingTypeFilter) return;
+    setActiveTypes(new Set([pendingTypeFilter]));
+    setActiveTags(new Set());
+    setMinImportance(0);
+    setTypeFilter(null);
+  }, [pendingTypeFilter, setTypeFilter]);
+
+  // Filters are project-scoped: a tag/type filter that matches one project
+  // can blank out another's list, so reset them on project switch.
+  useEffect(() => {
+    setActiveTypes(new Set());
+    setActiveTags(new Set());
+    setMinImportance(0);
+  }, [currentProjectId]);
 
   async function handleLoadMore() {
     if (loadingMore || !hasMore) return;
@@ -44,13 +69,18 @@ export function Memories() {
   }
 
   const selected = useMemo(
-    () => memories.find((m) => m.uid === selectedUid) ?? results.find((m) => m.uid === selectedUid),
-    [memories, results, selectedUid]
+    () =>
+      memories.find((m) => m.uid === selectedUid) ??
+      results.find((m) => m.uid === selectedUid) ??
+      (selectedUid && hydratedSelected?.uid === selectedUid ? hydratedSelected : null),
+    [memories, results, selectedUid, hydratedSelected]
   );
 
   const searchSeq = useRef(0);
   useEffect(() => {
     const trimmed = query.trim();
+    setSearchK(50);
+    setSearchError(null);
     if (!trimmed) {
       setResults([]);
       setRecallId(null);
@@ -66,7 +96,7 @@ export function Memories() {
           const response = await api.recallExplain({
             project_id: currentProjectId,
             query: trimmed,
-            k: 50,
+            k: searchK,
           });
           if (seq === searchSeq.current) {
             setResults(response.results);
@@ -75,13 +105,20 @@ export function Memories() {
               Object.fromEntries(response.results.map((hit) => [hit.uid, hit.explanation])),
             );
           }
+        } catch (err) {
+          if (seq === searchSeq.current) {
+            setResults([]);
+            setRecallId(null);
+            setExplanations({});
+            setSearchError(err instanceof Error ? err.message : String(err));
+          }
         } finally {
           if (seq === searchSeq.current) setSearching(false);
         }
       })();
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, currentProjectId]);
+  }, [query, currentProjectId, searchK, retryToken]);
 
   const visible = useMemo(() => {
     const source = query.trim() ? results : memories;
@@ -166,18 +203,20 @@ export function Memories() {
           if (!ok) return;
           try {
             await api.forget(m.uid);
+            await refreshTags();
             await Promise.all([refreshMemories(), refreshStats()]);
             if (selectedUid === m.uid) setSelected(null);
             showToast({ kind: "ok", text: "Forgotten" });
           } catch (e) {
-            showToast({ kind: "err", text: String(e) });
+            showToast({ kind: "err", text: friendlyError(e) });
           }
         },
       },
     ];
   }
 
-  const topTags = tags.slice(0, 20);
+  const [showAllTags, setShowAllTags] = useState(false);
+  const visibleTagList = showAllTags ? tags : tags.slice(0, 20);
 
   return (
     <div className="flex h-full">
@@ -200,6 +239,8 @@ export function Memories() {
             {query && (
               <button
                 onClick={() => setQuery("")}
+                aria-label="Clear search"
+                title="Clear search"
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-text-dim hover:text-text"
               >
                 <X size={13} />
@@ -229,12 +270,12 @@ export function Memories() {
               );
             })}
 
-            {topTags.length > 0 && (
+            {visibleTagList.length > 0 && (
               <>
                 <span className="ml-2 text-[10px] uppercase tracking-widest text-text-dim">
                   tag
                 </span>
-                {topTags.map(([t, n]) => {
+                {visibleTagList.map(([t, n]) => {
                   const active = activeTags.has(t);
                   return (
                     <button
@@ -252,6 +293,14 @@ export function Memories() {
                     </button>
                   );
                 })}
+                {tags.length > 20 && (
+                  <button
+                    onClick={() => setShowAllTags((v) => !v)}
+                    className="rounded-full border border-border bg-surface-2 px-2.5 py-0.5 text-xs text-accent transition hover:text-text"
+                  >
+                    {showAllTags ? "Show less" : `+${tags.length - 20} more`}
+                  </button>
+                )}
               </>
             )}
 
@@ -310,10 +359,46 @@ export function Memories() {
               ))}
             </div>
           )}
-          {!memoriesLoading && visible.length === 0 ? (
+          {searchError && (
+            <div
+              role="alert"
+              className="mb-3 flex items-center gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"
+            >
+              <span className="min-w-0 flex-1 truncate" title={searchError}>
+                Search failed: {searchError}
+              </span>
+              <button
+                onClick={() => setRetryToken((t) => t + 1)}
+                className="btn-outline shrink-0 px-2 py-0.5 text-[11px]"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {!memoriesLoading && visible.length === 0 && query.trim() ? (
             <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
               <FileCode2 size={24} className="mb-2 opacity-50" />
-              <div className="text-sm">No memories match.</div>
+              <div className="text-sm">
+                No memories match the active filters
+                {activeTypes.size + activeTags.size > 0 &&
+                  ` (${[...activeTypes, ...activeTags].length} active)`}
+                .
+              </div>
+              <button
+                onClick={() => {
+                  setActiveTypes(new Set());
+                  setActiveTags(new Set());
+                  setMinImportance(0);
+                }}
+                className="btn-outline mt-3 px-2 py-1 text-xs"
+              >
+                Clear all filters
+              </button>
+            </div>
+          ) : visible.length === 0 ? (
+            <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
+              <FileCode2 size={24} className="mb-2 opacity-50" />
+              <div className="text-sm">No memories in this project yet.</div>
               <div className="mt-1 text-xs">
                 Press <span className="kbd">⌘K</span> to add one.
               </div>
@@ -332,6 +417,7 @@ export function Memories() {
                     }
                   }}
                   contextMenuItems={buildMemoryMenu(m)}
+                  score={results.find((r) => r.uid === m.uid)?.score}
                   explanation={explanations[m.uid]}
                   onFeedback={
                     recallId
@@ -385,6 +471,13 @@ export function Memories() {
           </div>
         )}
       </div>
+
+      {/* Detail as overlay below lg, where the column is hidden */}
+      {selected && (
+        <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md border-l border-border-subtle bg-surface shadow-modal lg:hidden">
+          <MemoryDetail memory={selected} onClose={() => setSelected(null)} />
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useApp } from "./lib/store";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -17,6 +17,7 @@ export default function App() {
   const view = useApp((s) => s.view);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const [ready, setReady] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
 
   const bootstrapOnce = useApp((s) => s.bootstrapOnce);
   const refreshMemories = useApp((s) => s.refreshMemories);
@@ -24,11 +25,21 @@ export default function App() {
   const refreshGraph = useApp((s) => s.refreshGraph);
 
   // Single batched IPC call on mount — replaces 7 sequential calls.
-  useEffect(() => {
-    bootstrapOnce()
-      .catch((e) => console.error("bootstrap failed", e))
-      .finally(() => setReady(true));
+  const boot = useCallback(async () => {
+    setReady(false);
+    setBootError(null);
+    try {
+      await bootstrapOnce();
+    } catch (e) {
+      setBootError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReady(true);
+    }
   }, [bootstrapOnce]);
+
+  useEffect(() => {
+    void boot();
+  }, [boot]);
 
   // Re-fetch project-scoped data when the active project changes.
   useEffect(() => {
@@ -69,6 +80,26 @@ export default function App() {
           <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
         </div>
         <div className="text-xs text-text-muted">Loading your memory layer…</div>
+      </div>
+    );
+  }
+
+  if (bootError) {
+    return (
+      <div className="flex h-screen items-center justify-center p-8">
+        <div className="card w-full max-w-md p-6 text-center">
+          <div className="font-serif text-lg text-text">biTurbo could not load your data</div>
+          <p className="mt-2 text-sm text-text-muted">
+            The local database did not respond. Your memories are safe on disk — retry, or
+            check the log file in the data folder if this keeps happening.
+          </p>
+          <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 text-left font-mono text-xs text-text-muted">
+            {bootError}
+          </pre>
+          <button onClick={() => void boot()} className="btn-primary mt-4">
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
