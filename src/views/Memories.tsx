@@ -15,6 +15,7 @@ export function Memories() {
   const memories = useApp((s) => s.memories);
   const selectedUid = useApp((s) => s.selectedMemoryUid);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
+  const hydratedSelected = useApp((s) => s.hydratedSelected);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const showToast = useApp((s) => s.showToast);
   const refreshMemories = useApp((s) => s.refreshMemories);
@@ -42,8 +43,11 @@ export function Memories() {
   }
 
   const selected = useMemo(
-    () => memories.find((m) => m.uid === selectedUid) ?? results.find((m) => m.uid === selectedUid),
-    [memories, results, selectedUid]
+    () =>
+      memories.find((m) => m.uid === selectedUid) ??
+      results.find((m) => m.uid === selectedUid) ??
+      (selectedUid && hydratedSelected?.uid === selectedUid ? hydratedSelected : null),
+    [memories, results, selectedUid, hydratedSelected]
   );
 
   const searchSeq = useRef(0);
