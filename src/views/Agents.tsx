@@ -57,17 +57,18 @@ export function Agents() {
             placeholder="Mavis"
             className="input flex-1"
           />
-          <select
+          <input
             value={kind}
             onChange={(e) => setKind(e.target.value)}
+            placeholder="kind"
+            list="agent-kinds"
             className="input w-44"
-          >
+          />
+          <datalist id="agent-kinds">
             {KINDS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
+              <option key={k} value={k} />
             ))}
-          </select>
+          </datalist>
           <button
             onClick={register}
             disabled={!name.trim() || busy}
