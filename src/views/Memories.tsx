@@ -24,6 +24,7 @@ export function Memories() {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<typeof memories>([]);
+  const [searchK, setSearchK] = useState(50);
   const [recallId, setRecallId] = useState<string | null>(null);
   const [explanations, setExplanations] = useState<Record<string, RecallExplanation>>({});
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
@@ -49,6 +50,7 @@ export function Memories() {
   const searchSeq = useRef(0);
   useEffect(() => {
     const trimmed = query.trim();
+    setSearchK(50);
     if (!trimmed) {
       setResults([]);
       setRecallId(null);
@@ -64,7 +66,7 @@ export function Memories() {
           const response = await api.recallExplain({
             project_id: currentProjectId,
             query: trimmed,
-            k: 50,
+            k: searchK,
           });
           if (seq === searchSeq.current) {
             setResults(response.results);
@@ -79,7 +81,7 @@ export function Memories() {
       })();
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, currentProjectId]);
+  }, [query, currentProjectId, searchK]);
 
   const visible = useMemo(() => {
     const source = query.trim() ? results : memories;
