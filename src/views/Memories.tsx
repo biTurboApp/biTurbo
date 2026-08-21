@@ -5,7 +5,7 @@ import { MemoryCard } from "../components/MemoryCard";
 import { MemoryDetail } from "../components/MemoryDetail";
 import { Search, X, FileCode2, Hash, ExternalLink, Copy, Trash2 } from "lucide-react";
 import type { ContextMenuItem } from "../components/ContextMenu";
-import type { RecallExplanation } from "../lib/types";
+import type { ExplainedMemory, RecallExplanation } from "../lib/types";
 import clsx from "clsx";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection", "code"] as const;
@@ -23,7 +23,7 @@ export function Memories() {
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
-  const [results, setResults] = useState<typeof memories>([]);
+  const [results, setResults] = useState<ExplainedMemory[]>([]);
   const [recallId, setRecallId] = useState<string | null>(null);
   const [explanations, setExplanations] = useState<Record<string, RecallExplanation>>({});
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
@@ -165,7 +165,8 @@ export function Memories() {
     ];
   }
 
-  const topTags = tags.slice(0, 20);
+  const [showAllTags, setShowAllTags] = useState(false);
+  const visibleTagList = showAllTags ? tags : tags.slice(0, 20);
 
   return (
     <div className="flex h-full">
@@ -217,12 +218,12 @@ export function Memories() {
               );
             })}
 
-            {topTags.length > 0 && (
+            {visibleTagList.length > 0 && (
               <>
                 <span className="ml-2 text-[10px] uppercase tracking-widest text-text-dim">
                   tag
                 </span>
-                {topTags.map(([t, n]) => {
+                {visibleTagList.map(([t, n]) => {
                   const active = activeTags.has(t);
                   return (
                     <button
@@ -240,6 +241,14 @@ export function Memories() {
                     </button>
                   );
                 })}
+                {tags.length > 20 && (
+                  <button
+                    onClick={() => setShowAllTags((v) => !v)}
+                    className="rounded-full border border-border bg-surface-2 px-2.5 py-0.5 text-xs text-accent transition hover:text-text"
+                  >
+                    {showAllTags ? "Show less" : `+${tags.length - 20} more`}
+                  </button>
+                )}
               </>
             )}
 
@@ -290,6 +299,7 @@ export function Memories() {
                     }
                   }}
                   contextMenuItems={buildMemoryMenu(m)}
+                  score={results.find((r) => r.uid === m.uid)?.score}
                   explanation={explanations[m.uid]}
                   onFeedback={
                     recallId
