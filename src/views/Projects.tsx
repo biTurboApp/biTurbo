@@ -5,6 +5,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Plus, FolderGit2, Trash2, Database, FileSearch, Loader2, Eye, Download, FileText, Radar, FilePlus2 } from "lucide-react";
 import clsx from "clsx";
 import type { IngestProgress } from "../lib/types";
+import { friendlyError } from "../lib/format";
 
 export function Projects() {
   const projects = useApp((s) => s.projects);
@@ -17,9 +18,12 @@ export function Projects() {
 
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
   const [desc, setDesc] = useState("");
   const [rootPath, setRootPath] = useState("");
   const ingestJobs = useApp((s) => s.ingestJobs);
+  const ingestJobIds = useApp((s) => s.ingestJobIds);
+  const registerIngestJob = useApp((s) => s.registerIngestJob);
   const [busy, setBusy] = useState<string | null>(null);
   const [watchOn, setWatchOn] = useState<Record<string, boolean>>({});
   const [importingFor, setImportingFor] = useState<string | null>(null);
@@ -38,7 +42,13 @@ export function Projects() {
   }
 
   async function create() {
-    if (!name.trim()) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (projects.some((p) => p.name.toLowerCase() === trimmed.toLowerCase())) {
+      setNameError("A project with this name already exists");
+      return;
+    }
+    setNameError(null);
     setBusy("create");
     try {
       const p = await api.createProject({
@@ -55,7 +65,7 @@ export function Projects() {
       setCurrentProjectId(p.id);
       showToast({ kind: "ok", text: `Created project ${p.name}` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(null);
     }
@@ -67,10 +77,26 @@ export function Projects() {
       return;
     }
     try {
-      await api.ingestProject(projectId, root);
+      const job = await api.ingestProject(projectId, root);
+      registerIngestJob(projectId, job.job_id);
       showToast({ kind: "info", text: `Started indexing ${projectId}…` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
+    }
+  }
+
+  async function cancelIngest() {
+    if (!activeIngest) return;
+    const jobId = ingestJobIds[activeIngest.project_id];
+    if (!jobId) {
+      showToast({ kind: "err", text: "Cannot cancel — job id unknown" });
+      return;
+    }
+    try {
+      await api.cancelOperation(jobId);
+      showToast({ kind: "info", text: "Cancellation requested" });
+    } catch (e) {
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -93,7 +119,7 @@ export function Projects() {
       await refreshStats();
       showToast({ kind: "ok", text: "Deleted" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(null);
     }
@@ -112,7 +138,7 @@ export function Projects() {
         text: `Imported ${r.files_imported} files · ${r.memories_created} memories${r.errors.length ? ` · ${r.errors.length} errors` : ""}`,
       });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setImportingFor(null);
     }
@@ -129,7 +155,7 @@ export function Projects() {
       const r = await api.exportMemories(projectId, target);
       showToast({ kind: "ok", text: `Exported ${r.memories_written} memories → ${r.output_path}` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -142,7 +168,7 @@ export function Projects() {
         text: enabled ? `Watching ${projectId} (auto-reingest on changes)` : `Stopped watching ${projectId}`,
       });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -157,7 +183,7 @@ export function Projects() {
         text: r.created.length ? `Created ${r.created.join(", ")}` : "Already up to date",
       });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setRepairing(null);
     }
@@ -175,7 +201,7 @@ export function Projects() {
       await refreshProjects();
       showToast({ kind: "ok", text: model ? `Set model to ${model}` : "Cleared model preference" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -210,6 +236,15 @@ export function Projects() {
                 {activeIngest.current}/{activeIngest.total} · {activeIngest.chunks_so_far} chunks
               </span>
             )}
+            {activeIngest.phase !== "done" && (
+              <button
+                onClick={() => void cancelIngest()}
+                className="btn-ghost ml-auto shrink-0 px-2 py-0.5 text-[11px]"
+                title="Request cancellation of this indexing run"
+              >
+                Cancel
+              </button>
+            )}
             {activeIngest.phase === "done" && (
               <span className="ml-auto font-mono text-xs text-success">
                 {activeIngest.chunks_so_far} chunks indexed
@@ -233,7 +268,13 @@ export function Projects() {
       )}
 
       {creating && (
-        <div className="card space-y-3 p-5">
+        <form
+          className="card space-y-3 p-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void create();
+          }}
+        >
           <h3 className="font-serif text-lg">New project</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -242,11 +283,19 @@ export function Projects() {
               </label>
               <input
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setNameError(null);
+                }}
                 placeholder="scout-qa"
                 className="input"
                 autoFocus
               />
+              {nameError && (
+                <p role="alert" className="mt-1 text-xs text-danger">
+                  {nameError}
+                </p>
+              )}
             </div>
             <div>
               <label className="mb-1 block text-[10px] uppercase tracking-widest text-text-dim">
@@ -271,24 +320,24 @@ export function Projects() {
                 placeholder="/Users/you/Code/project"
                 className="input font-mono"
               />
-              <button onClick={pickFolder} className="btn-outline">
+              <button type="button" onClick={pickFolder} className="btn-outline">
                 Browse
               </button>
             </div>
           </div>
           <div className="flex items-center justify-end gap-2 border-t border-border-subtle pt-3">
-            <button onClick={() => setCreating(false)} className="btn-ghost">
+            <button type="button" onClick={() => setCreating(false)} className="btn-ghost">
               Cancel
             </button>
             <button
-              onClick={create}
+              type="submit"
               disabled={!name.trim() || busy === "create"}
               className="btn-primary"
             >
               {busy === "create" ? "Creating…" : "Create"}
             </button>
           </div>
-        </div>
+        </form>
       )}
 
       <div className="grid gap-3">
