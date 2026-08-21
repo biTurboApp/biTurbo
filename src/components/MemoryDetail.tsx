@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Memory } from "../lib/types";
-import { MEM_TYPE_META, timeAgo, shortDate, importanceDots, truncatePath, stripLeadingPathComment } from "../lib/format";
+import { MEM_TYPE_META, timeAgo, shortDate, importanceDots, truncatePath, stripLeadingPathComment, friendlyError } from "../lib/format";
 import { api } from "../lib/api";
 import { useApp, useConfirm } from "../lib/store";
 import { X, Trash2, Edit3, Save, FileCode2, Hash, ChevronDown, ChevronUp } from "lucide-react";
@@ -63,7 +63,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
       showToast({ kind: "ok", text: "Saved" });
       setEditing(false);
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -80,7 +80,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
       await Promise.all([refreshMemories(), refreshStats()]);
       showToast({ kind: "ok", text: "Forgotten" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 

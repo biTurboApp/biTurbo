@@ -93,6 +93,18 @@ export function importanceDots(imp: number): number {
 }
 
 /**
+ * Human-facing error text for toasts: strips backend error prefixes,
+ * collapses multi-line IPC dumps to the first line, and caps length.
+ */
+export function friendlyError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  const firstLine = raw.split("\n")[0]?.trim() ?? "";
+  const cleaned = firstLine.replace(/^BiError:\s*/i, "").replace(/^Error:\s*/i, "");
+  if (cleaned.length === 0) return "Something went wrong";
+  return cleaned.length > 120 ? `${cleaned.slice(0, 117)}…` : cleaned;
+}
+
+/**
  * Code memory content is often stored with a redundant leading header comment
  * (e.g. `// C:\path\file.ts:1-133`) that duplicates the path/range already
  * shown in the code chip. Strip it so the code block only shows real code.
