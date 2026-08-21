@@ -1,0 +1,137 @@
+# Drain Log
+
+## Run 2026-08-21T14:58Z
+
+- Close-out: pr
+- Workspace: branch `drain/ux` (from origin/main; local main behind 14)
+- Selection (116 open, label ux): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
+- Batch (P1→P3, default budget 5): #60, #28, #9, #8, #6
+- Outcomes:
+  - #60 fixed (d1db1f4) — prompt() → modal; IPC args + success/error paths verified on running frontend
+  - #28 fixed (5dc1b77) — search catch + alert/Retry; fail→banner, recover→retry→results verified
+  - #9  fixed (7d121af) — danger confirm focuses Cancel; verified via activeElement on open dialog
+  - #8  fixed (986caeb) — QuickAdd dialog semantics/trap/restore; all behaviors verified
+  - #6  fixed (7e0e7d5) — global :focus-visible outline; keyboard vs mouse verified via computed styles
+- PR: https://github.com/biTurboApp/biTurbo/pull/549 (merge closes all five)
+- Notes: upstream lockfile was frozen-lockfile-broken; synced in d1db1f4. Temp ?uiproof verification shim removed before commit.
+
+DRAIN: selected=116 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
+
+## Run 2026-08-21T15:37Z
+
+- Close-out: pr
+- Workspace: branch `drain/ux-2` (from origin/main @ a2829b0; PR #549 still open, its 5 issues excluded)
+- Selection (111 open excl. #6 #8 #9 #28 #60 pending PR #549): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
+- Batch (P1→P3, budget 5): #11, #61, #49, #33, #76
+- Outcomes:
+  - #11 fixed (8ae48d4) — bootstrap error screen + Retry; fail→screen, recover→retry→boot verified
+  - #61 fixed (1e8d20f) — delete-active fallback to default; verified via real delete flow
+  - #49 fixed (a5c50f0) — related click hydrates off-page memory; uid-9 detail verified
+  - #33 fixed (fa7572a) — cards keyboard-operable; focus/Enter/Shift+F10 verified
+  - #76 fixed (5969975) — honest graph empty state; copy + navigation verified
+- PR: https://github.com/biTurboApp/biTurbo/pull/550 (merge closes all five)
+- Notes: temp ?uiproof shim removed before commit.
+
+DRAIN: selected=111 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
+
+## Run 2026-08-21T16:03Z
+
+- Close-out: pr
+- Workspace: branch `drain/ux-3` (from origin/main @ a2829b0; PRs #549/#550 open, their 10 issues excluded)
+- Selection (106 open excl. pending-PR issues): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
+- Batch (P1→P3, budget 5): #21, #29, #46, #73, #94
+- Outcomes:
+  - #21 fixed (8319f46) — detail drawer below lg; 900px overlay + close, 1280px side column verified
+  - #29 fixed (8319f46) — filters reset on project switch; chip/slider state verified across switch
+  - #46 fixed (be94a63) — per-uid draft cache; dirty-switch toast + restore verified
+  - #73 fixed (043527a) — zero-projects empty state; CTA opens create form verified
+  - #94 fixed (6616f03) — activity window 60→1000; "400 recent" + 79/84 cells filled verified (interim; backend aggregation still noted in ticket)
+- PR: https://github.com/biTurboApp/biTurbo/pull/551 (merge closes all five)
+- Notes: temp ?uiproof shim removed before commit. drain-log.md rode along in the #21 commit.
+
+DRAIN: selected=106 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
+
+## Run 2026-08-21T16:18Z
+
+- Close-out: pr
+- Workspace: branch `drain/ux-4` (from origin/main @ a2829b0; PRs #549/#550/#551 open, their 15 issues excluded)
+- Selection (101 open excl. pending-PR issues): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
+- Batch (P1→P3, budget 5): #13, #15, #69, #30, #66
+- Outcomes:
+  - #13 fixed (6c699ce) — toast queue/actions/aria-live; stacked toasts + live region verified
+  - #15 fixed (a084fac) — friendlyError at 17 sites; prefixed multi-line error rendered as "SqliteFailure"
+  - #69 fixed (1ff1fa8) — ingest Cancel; cancel_operation fired with captured job id, toast verified
+  - #30 fixed (6caa168) — differentiated empty states; both clear actions verified
+  - #66 fixed (a05439e) — form Enter submit + inline duplicate error; both paths verified
+- PR: https://github.com/biTurboApp/biTurbo/pull/552 (merge closes all five)
+- Notes: shared files carry rider hunks (noted in commit bodies); temp ?uiproof shim removed before commit.
+
+DRAIN: selected=101 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
+
+## Run 2026-08-21T16:44Z
+
+- Close-out: pr
+- Workspace: branch `drain/ux-5` (from origin/main @ a2829b0; PRs #549–#552 open, their 20 issues excluded)
+- Selection (96 open excl. pending-PR issues): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
+- Batch (P1→P3, budget 5): #97, #77, #32, #92, #36
+- Outcomes:
+  - #97 fixed (e94d033) — onboarding checklist; fresh-state render + both deep links verified
+  - #77 fixed (7b8a288) — zero-node overlay; empty/1-node/all-filtered variants verified
+  - #32 fixed (6ffa1bb) — tag expander; 20→25 chips + Show less verified
+  - #92 fixed (5083573) — dated tooltips + Today marker; 84/84 cells dated
+  - #36 fixed (0bf34e5) — relevance chips; 92%/79%/66% on search hits, hidden while browsing
+- PR: https://github.com/biTurboApp/biTurbo/pull/553 (merge closes all five)
+- Notes: temp ?uiproof shim removed before commit.
+
+DRAIN: selected=96 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
+
+## Run 2026-08-21T17:09Z
+
+- Close-out: pr
+- Workspace: branch `drain/ux-6` (from origin/main @ a2829b0; PRs #549–#553 open, their 25 issues excluded)
+- Selection (91 open excl. pending-PR issues): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
+- Batch (P1→P3, budget 5): #64, #83, #80, #86, #71
+- Outcomes:
+  - #64 fixed (6933d50) — import error panel; both error lines + dismiss verified
+  - #83 fixed (5b3fd95) — zoom-at-cursor (4px drift) + Fit (15×14 → 322×166); includes blank-renderer blocker fix
+  - #80 fixed (5b3fd95) — edge filters; count 2→1 + struck legend verified
+  - #86 fixed (7608861) — activity tiers; ACTIVE NOW / 3D AGO verified
+  - #71 fixed (6933d50) — watch_status reconciliation; divergent badge verified
+- PR: https://github.com/biTurboApp/biTurbo/pull/554 (merge closes all five)
+- Notes: blank-graph worker bug found & fixed as #83 prerequisite. Temp ?uiproof shim removed before commit.
+
+DRAIN: selected=91 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
+
+## Run 2026-08-21T18:08Z
+
+- Close-out: pr
+- Workspace: branch `drain/ux-7` (from origin/main @ a2829b0; PRs #549–#554 open, their 30 issues excluded)
+- Selection (86 open excl. pending-PR issues): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
+- Batch (P1→P3, budget 5): #55, #79, #119, #118, #52
+- Outcomes:
+  - #55 fixed (62256e4) — QuickAdd code type + file fields; remember args verified (code/src/auth/login.ts/42)
+  - #79 fixed (c885954) — node search counter; 2/2, 1/2, 0/2 verified
+  - #119 fixed (6f5607b) — icon-button sweep; 0 unlabeled across Agents/Memories/Graph
+  - #118 fixed (bbc9b75) — shared phase labels; TopBar "Scanning project…" verified
+  - #52 fixed (8812da0) — related % bars; 71%/55% + raw score gone verified
+- PR: https://github.com/biTurboApp/biTurbo/pull/555 (merge closes all five)
+- Notes: temp ?uiproof shim removed before commit.
+
+DRAIN: selected=86 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
+
+## Run 2026-08-21T19:09Z
+
+- Close-out: pr
+- Workspace: branch `drain/ux-8` (from origin/main @ a2829b0; PRs #549–#555 open, their 35 issues excluded)
+- Selection (81 open excl. pending-PR issues): 121 120 119 118 117 116 115 114 113 112 111 110 109 108 107 106 105 104 103 102 101 100 99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6
+- Batch (P1→P3, budget 5): #100, #95, #85, #58, #107
+- Outcomes:
+  - #100 fixed (bcc2066) — resolved MCP path in snippet + status line; verified
+  - #107 fixed (bcc2066) — launch switch aria-label; verified
+  - #95 fixed (6be5d16) — type rows apply filter; chip + filtered list verified
+  - #85 fixed (4b9c74a) — Enter submit; register_agent observed
+  - #58 fixed (690d25f) — importance default 0.6 + tooltip; slider value verified
+- PR: https://github.com/biTurboApp/biTurbo/pull/556 (merge closes all five)
+- Notes: temp ?uiproof shim removed before commit.
+
+DRAIN: selected=81 attempted=5 fixed=5 blocked=0 deferred=0 close-out=pr
