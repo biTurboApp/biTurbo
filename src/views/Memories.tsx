@@ -35,6 +35,14 @@ export function Memories() {
   const tags = useApp((s) => s.tags);
   const memoryOffset = useApp((s) => s.memoryOffset);
 
+  // Filters are project-scoped: a tag/type filter that matches one project
+  // can blank out another's list, so reset them on project switch.
+  useEffect(() => {
+    setActiveTypes(new Set());
+    setActiveTags(new Set());
+    setMinImportance(0);
+  }, [currentProjectId]);
+
   async function handleLoadMore() {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
@@ -343,6 +351,13 @@ export function Memories() {
           </div>
         )}
       </div>
+
+      {/* Detail as overlay below lg, where the column is hidden */}
+      {selected && (
+        <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md border-l border-border-subtle bg-surface shadow-modal lg:hidden">
+          <MemoryDetail memory={selected} onClose={() => setSelected(null)} />
+        </div>
+      )}
     </div>
   );
 }
