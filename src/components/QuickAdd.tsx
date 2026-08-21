@@ -106,7 +106,12 @@ export function QuickAdd() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 pt-[10vh] backdrop-blur-sm animate-fade_in"
-      onClick={() => setOpen(false)}
+conflict://5
+      onClick={() => {
+        // Ignore backdrop clicks while the save is in flight so a stray
+        // click can't dismiss a dialog that's mid-submit.
+        if (!busy) setOpen(false);
+      }}
       onKeyDown={trapTab}
     >
       <div

@@ -18,8 +18,9 @@ export function Memories() {
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
   const hydratedSelected = useApp((s) => s.hydratedSelected);
   const currentProjectId = useApp((s) => s.currentProjectId);
-  const showToast = useApp((s) => s.showToast);
   const refreshMemories = useApp((s) => s.refreshMemories);
+  const refreshTags = useApp((s) => s.refreshTags);
+  const showToast = useApp((s) => s.showToast);
   const refreshStats = useApp((s) => s.refreshStats);
   const confirm = useConfirm();
 
@@ -188,6 +189,7 @@ export function Memories() {
           if (!ok) return;
           try {
             await api.forget(m.uid);
+            await refreshTags();
             await Promise.all([refreshMemories(), refreshStats()]);
             if (selectedUid === m.uid) setSelected(null);
             showToast({ kind: "ok", text: "Forgotten" });
