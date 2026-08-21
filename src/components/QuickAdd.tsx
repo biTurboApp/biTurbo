@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp } from "../lib/store";
 import { api } from "../lib/api";
 import { X, Plus } from "lucide-react";
 import clsx from "clsx";
+import { friendlyError } from "../lib/format";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection"] as const;
 
@@ -19,6 +20,49 @@ export function QuickAdd() {
   const [tags, setTags] = useState("");
   const [importance, setImportance] = useState(0.5);
   const [busy, setBusy] = useState(false);
+
+  const panelRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
+
+  // Dialog focus management: move focus into the modal on open, restore
+  // it to the opener on close.
+  useEffect(() => {
+    if (!open) return;
+    previouslyFocused.current = (document.activeElement as HTMLElement) ?? null;
+    const t = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    return () => {
+      window.clearTimeout(t);
+      const opener = previouslyFocused.current;
+      if (opener && document.body.contains(opener)) {
+        opener.focus();
+      }
+    };
+  }, [open]);
+
+  // Keep Tab cycling inside the dialog.
+  function trapTab(e: React.KeyboardEvent) {
+    if (e.key !== "Tab" || !panelRef.current) return;
+    const focusables = panelRef.current.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    const inside = active != null && panelRef.current.contains(active);
+    if (e.shiftKey) {
+      if (active === first || !inside) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !inside) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
 
   if (!open) return null;
 
@@ -46,7 +90,7 @@ export function QuickAdd() {
       await refreshStats();
       showToast({ kind: "ok", text: "Remembered" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(false);
     }
@@ -56,13 +100,18 @@ export function QuickAdd() {
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 pt-[10vh] backdrop-blur-sm animate-fade_in"
       onClick={() => setOpen(false)}
+      onKeyDown={trapTab}
     >
       <div
+        ref={panelRef}
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quickadd-title"
         className="w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-          <div className="flex items-center gap-2 font-serif text-lg">
+          <div id="quickadd-title" className="flex items-center gap-2 font-serif text-lg">
             <span>Remember</span>
             <span className="font-mono text-[10px] text-text-dim">⌘K</span>
           </div>
@@ -73,11 +122,11 @@ export function QuickAdd() {
 
         <div className="space-y-3 p-4">
           <textarea
+            ref={textareaRef}
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder="What should the agents remember?"
             rows={4}
-            autoFocus
             className="input resize-none text-sm"
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();

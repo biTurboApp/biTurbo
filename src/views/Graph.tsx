@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Copy,
   ExternalLink,
+  FolderGit2,
 } from "lucide-react";
 import type { ContextMenuItem } from "../components/ContextMenu";
 import type {
@@ -19,6 +20,7 @@ import type {
   LayoutProgress,
   LayoutError,
 } from "./layoutWorker";
+import { friendlyError } from "../lib/format";
 
 type Pos = { x: number; y: number };
 
@@ -47,6 +49,7 @@ const LAYOUT_CY = LAYOUT_H / 2;
 export function Graph() {
   const graph = useApp((s) => s.graph);
   const refreshGraph = useApp((s) => s.refreshGraph);
+  const setAppView = useApp((s) => s.setView);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const showToast = useApp((s) => s.showToast);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
@@ -199,7 +202,7 @@ export function Graph() {
       await refreshGraph();
       showToast({ kind: "ok", text: "Graph refreshed" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(false);
     }
@@ -212,12 +215,19 @@ export function Graph() {
           <Share2 size={28} className="mx-auto mb-3 text-text-dim" />
           <div className="font-serif text-lg">No graph for this project yet.</div>
           <div className="mt-1 text-sm text-text-muted">
-            Run <span className="kbd">ingest_project</span> to build the index, then refresh.
+            Index your code once and the symbol graph appears here. Start from{" "}
+            <span className="kbd">Projects → Re-index code</span>.
           </div>
-          <button onClick={reload} className="btn-primary mt-4">
-            <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
-            Build graph
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <button onClick={() => setAppView("projects")} className="btn-primary">
+              <FolderGit2 size={14} />
+              Open Projects
+            </button>
+            <button onClick={reload} className="btn-outline" disabled={busy}>
+              <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
+              Refresh
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -390,6 +400,19 @@ export function Graph() {
           onClick={onClick}
           onContextMenu={onContextMenu}
         />
+
+        {data && data.nodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-12 text-center">
+            <div>
+              <div className="font-serif text-lg text-text-muted">No nodes to display</div>
+              <div className="mt-1 text-sm text-text-muted">
+                {filter.size < NODE_KINDS.length
+                  ? "All node kinds are filtered out — re-enable them in the sidebar."
+                  : "This project has no indexed code yet."}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Controls */}
         <div className="pointer-events-none absolute inset-0 flex flex-col">
