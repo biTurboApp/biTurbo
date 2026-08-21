@@ -41,11 +41,31 @@ export const MemoryCard = memo(function MemoryCard({
         }
       : undefined);
 
+  // Keyboard parity with mouse: Enter/Space activate, Shift+F10 or the
+  // Menu key opens the context menu at the card.
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick?.();
+      return;
+    }
+    if ((e.shiftKey && e.key === "F10") || e.key === "ContextMenu") {
+      e.preventDefault();
+      if (!contextMenuItems) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      showMenu(rect.left + rect.width / 2, rect.top + rect.height / 2, contextMenuItems);
+    }
+  }
+
   return (
     <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={handleKeyDown}
       onContextMenu={handleContext}
       className={clsx("memory-card", active && "active")}>
+
       <div className="mb-2 flex items-center gap-2">
         <span
           className={clsx(
