@@ -14,6 +14,19 @@ export function Agents() {
   const [name, setName] = useState("");
   const [kind, setKind] = useState(KINDS[0]);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function refresh() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await refreshAgents();
+    } catch (e) {
+      showToast({ kind: "err", text: String(e) });
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   async function register() {
     if (!name.trim()) return;
@@ -40,8 +53,14 @@ export function Agents() {
             directly. Each agent's reads and writes are attributed automatically.
           </p>
         </div>
-        <button onClick={() => refreshAgents()} className="btn-ghost">
-          <RefreshCw size={13} />
+        <button
+          onClick={() => void refresh()}
+          disabled={refreshing}
+          className="btn-ghost"
+          aria-label="Refresh agents"
+          title="Refresh agents"
+        >
+          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
         </button>
       </div>
 
