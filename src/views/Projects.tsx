@@ -342,7 +342,10 @@ export function Projects() {
                       <FileSearch size={11} />
                       <span className="font-mono">{p.indexed_count}</span> code chunks
                     </span>
-                    <span className="font-mono text-[10px] text-text-dim">
+                    <span
+                      className="font-mono text-[10px] text-text-dim"
+                      title={`Embedding dimension ${p.dim}; turbovec stores each vector at ${p.bit_width}-bit quantization (${Math.round(32 / p.bit_width)}× smaller than float32)`}
+                    >
                       dim={p.dim} · {p.bit_width}-bit{p.embed_model ? ` · ${p.embed_model}` : ""}
                     </span>
                     {watchOn[p.id] && (
