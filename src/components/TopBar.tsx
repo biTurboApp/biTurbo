@@ -3,6 +3,7 @@ import { useApp } from "../lib/store";
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/api";
+import { ingestPhaseLabel } from "../lib/format";
 import type { ConsolidateReport } from "../lib/types";
 import { friendlyError } from "../lib/format";
 
@@ -74,8 +75,8 @@ export function TopBar() {
       {activeIngests.length > 0 && (
         <div className="hidden items-center gap-2 md:flex">
           <Loader2 size={12} className="animate-spin text-accent" />
-          <span className="text-[11px] capitalize text-text-muted">
-            {activeIngests[0].phase}…
+          <span className="text-[11px] text-text-muted">
+            {ingestPhaseLabel(activeIngests[0].phase)}…
           </span>
           {activeIngests[0].total > 0 && (
             <div className="h-1 w-16 overflow-hidden rounded-full bg-surface-2">

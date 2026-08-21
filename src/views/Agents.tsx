@@ -40,7 +40,7 @@ export function Agents() {
             directly. Each agent's reads and writes are attributed automatically.
           </p>
         </div>
-        <button onClick={() => refreshAgents()} className="btn-ghost">
+        <button onClick={() => refreshAgents()} className="btn-ghost" aria-label="Refresh agents" title="Refresh agents">
           <RefreshCw size={13} />
         </button>
       </div>

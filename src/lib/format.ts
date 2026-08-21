@@ -92,6 +92,21 @@ export function importanceDots(imp: number): number {
   return Math.max(1, Math.min(5, Math.round(imp * 5)));
 }
 
+/** Human phrasing for ingest pipeline phases, shared by all progress UI. */
+export const INGEST_PHASE_LABELS: Record<string, string> = {
+  queued: "Queued",
+  scanning: "Scanning project",
+  parsing: "Parsing files",
+  embedding: "Embedding chunks",
+  writing: "Writing chunks",
+  edges: "Building edges",
+  done: "Done",
+};
+
+export function ingestPhaseLabel(phase: string): string {
+  return INGEST_PHASE_LABELS[phase] ?? phase;
+}
+
 /**
  * Human-facing error text for toasts: strips backend error prefixes,
  * collapses multi-line IPC dumps to the first line, and caps length.

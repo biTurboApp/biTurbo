@@ -212,6 +212,8 @@ export function Memories() {
             {query && (
               <button
                 onClick={() => setQuery("")}
+                aria-label="Clear search"
+                title="Clear search"
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-text-dim hover:text-text"
               >
                 <X size={13} />

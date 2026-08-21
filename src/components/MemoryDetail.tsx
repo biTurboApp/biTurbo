@@ -142,7 +142,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
             </span>
           </div>
         </div>
-        <button onClick={onClose} className="btn-ghost p-1.5">
+        <button onClick={onClose} className="btn-ghost p-1.5" aria-label="Close details" title="Close">
           <X size={14} />
         </button>
       </div>
@@ -296,8 +296,16 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
                   className="block w-full rounded-md border border-border-subtle bg-surface p-2 text-left text-[11px] text-text-muted transition hover:border-border hover:bg-surface-2"
                 >
                   <div className="line-clamp-2 text-pretty">{r.content}</div>
-                  <div className="mt-1 font-mono text-[10px] text-text-dim">
-                    score {r.score.toFixed(3)}
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <div className="h-1 w-12 overflow-hidden rounded-full bg-surface-2">
+                      <div
+                        className="h-full bg-accent"
+                        style={{ width: `${Math.round(Math.min(1, Math.max(0, r.score)) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="font-mono text-[10px] text-text-dim">
+                      {Math.round(r.score * 100)}% match
+                    </span>
                   </div>
                 </button>
               ))}
