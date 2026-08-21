@@ -23,12 +23,35 @@ export function Projects() {
   const [busy, setBusy] = useState<string | null>(null);
   const [watchOn, setWatchOn] = useState<Record<string, boolean>>({});
   const [importingFor, setImportingFor] = useState<string | null>(null);
+  const [importErrors, setImportErrors] = useState<{ projectId: string; errors: string[] } | null>(null);
 
   useEffect(() => {
     const next: Record<string, boolean> = {};
     for (const p of projects) next[p.id] = p.watch_enabled;
     setWatchOn(next);
   }, [projects]);
+
+  // The watcher is the source of truth: reconcile badges with its live
+  // status (a watcher may have been stopped externally since boot).
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .watchStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setWatchOn((prev) => {
+          const next = { ...prev };
+          for (const id of Object.keys(next)) next[id] = status.watching.includes(id);
+          return next;
+        });
+      })
+      .catch(() => {
+        /* keep project-list defaults when the watcher is unreachable */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const activeIngest = Object.values(ingestJobs)[0] as IngestProgress | undefined;
 
@@ -107,10 +130,18 @@ export function Projects() {
       const r = await api.importFolder(projectId, sel);
       await refreshProjects();
       await refreshStats();
-      showToast({
-        kind: "ok",
-        text: `Imported ${r.files_imported} files · ${r.memories_created} memories${r.errors.length ? ` · ${r.errors.length} errors` : ""}`,
-      });
+      if (r.errors.length > 0) {
+        setImportErrors({ projectId, errors: r.errors });
+        showToast({
+          kind: "info",
+          text: `Imported ${r.files_imported} files · ${r.memories_created} memories · ${r.errors.length} failed — see details`,
+        });
+      } else {
+        showToast({
+          kind: "ok",
+          text: `Imported ${r.files_imported} files · ${r.memories_created} memories`,
+        });
+      }
     } catch (e) {
       showToast({ kind: "err", text: String(e) });
     } finally {
@@ -229,6 +260,30 @@ export function Projects() {
               {activeIngest.file}
             </div>
           )}
+        </div>
+      )}
+
+      {importErrors && (
+        <div className="card border-warning/40 p-4">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-text">
+              Import of {importErrors.projectId} finished with {importErrors.errors.length}{" "}
+              {importErrors.errors.length === 1 ? "error" : "errors"}
+            </span>
+            <button
+              onClick={() => setImportErrors(null)}
+              className="btn-ghost ml-auto px-2 py-0.5 text-[11px]"
+            >
+              Dismiss
+            </button>
+          </div>
+          <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto font-mono text-[11px] text-text-muted">
+            {importErrors.errors.map((err, i) => (
+              <li key={i} className="break-all rounded bg-surface-2 px-2 py-1">
+                {err}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
