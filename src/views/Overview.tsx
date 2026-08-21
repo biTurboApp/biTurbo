@@ -10,6 +10,7 @@ export function Overview() {
   const memories = useApp((s) => s.memories);
   const activity = useApp((s) => s.activity);
   const setView = useApp((s) => s.setView);
+  const setTypeFilter = useApp((s) => s.setTypeFilter);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
   const selectedMemoryUid = useApp((s) => s.selectedMemoryUid);
@@ -143,7 +144,10 @@ export function Overview() {
               return (
                 <button
                   key={t}
-                  onClick={() => setView("memories")}
+                  onClick={() => {
+                    setTypeFilter(t);
+                    setView("memories");
+                  }}
                   className="block w-full text-left transition hover:opacity-80"
                 >
                   <div className="mb-1 flex items-baseline justify-between text-xs">

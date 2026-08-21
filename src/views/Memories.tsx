@@ -38,6 +38,17 @@ export function Memories() {
   const loadMore = useApp((s) => s.loadMoreMemories);
   const tags = useApp((s) => s.tags);
   const memoryOffset = useApp((s) => s.memoryOffset);
+  const pendingTypeFilter = useApp((s) => s.pendingTypeFilter);
+  const setTypeFilter = useApp((s) => s.setTypeFilter);
+
+  // A type clicked on Overview pre-applies here, then clears.
+  useEffect(() => {
+    if (!pendingTypeFilter) return;
+    setActiveTypes(new Set([pendingTypeFilter]));
+    setActiveTags(new Set());
+    setMinImportance(0);
+    setTypeFilter(null);
+  }, [pendingTypeFilter, setTypeFilter]);
 
   // Filters are project-scoped: a tag/type filter that matches one project
   // can blank out another's list, so reset them on project switch.

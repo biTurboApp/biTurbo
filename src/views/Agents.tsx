@@ -46,7 +46,13 @@ export function Agents() {
       </div>
 
       {/* Register form */}
-      <div className="card p-4">
+      <form
+        className="card p-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void register();
+        }}
+      >
         <div className="mb-2 text-[10px] uppercase tracking-widest text-text-dim">
           Register a new agent
         </div>
@@ -68,18 +74,14 @@ export function Agents() {
               </option>
             ))}
           </select>
-          <button
-            onClick={register}
-            disabled={!name.trim() || busy}
-            className="btn-primary"
-          >
+          <button type="submit" disabled={!name.trim() || busy} className="btn-primary">
             <Plus size={14} /> Register
           </button>
         </div>
         <div className="mt-2 text-[10px] text-text-dim">
           Agents auto-register on first MCP call; you can also register by hand here.
         </div>
-      </div>
+      </form>
 
       {/* Agent list */}
       <div className="space-y-2">
