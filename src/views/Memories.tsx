@@ -7,6 +7,7 @@ import { Search, X, FileCode2, Hash, ExternalLink, Copy, Trash2 } from "lucide-r
 import type { ContextMenuItem } from "../components/ContextMenu";
 import type { RecallExplanation } from "../lib/types";
 import clsx from "clsx";
+import { friendlyError } from "../lib/format";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection", "code"] as const;
 const SEARCH_DEBOUNCE_MS = 180;
@@ -158,7 +159,7 @@ export function Memories() {
             if (selectedUid === m.uid) setSelected(null);
             showToast({ kind: "ok", text: "Forgotten" });
           } catch (e) {
-            showToast({ kind: "err", text: String(e) });
+            showToast({ kind: "err", text: friendlyError(e) });
           }
         },
       },
@@ -268,10 +269,41 @@ export function Memories() {
           {searching && (
             <div className="mb-3 text-xs text-text-dim">Searching…</div>
           )}
-          {visible.length === 0 ? (
+          {visible.length === 0 && query.trim() ? (
+            <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
+              <Search size={24} className="mb-2 opacity-50" />
+              <div className="text-sm">No results for “{query.trim()}”.</div>
+              <button
+                onClick={() => setQuery("")}
+                className="btn-outline mt-3 px-2 py-1 text-xs"
+              >
+                Clear search
+              </button>
+            </div>
+          ) : visible.length === 0 && (activeTypes.size > 0 || activeTags.size > 0 || minImportance > 0) ? (
             <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
               <FileCode2 size={24} className="mb-2 opacity-50" />
-              <div className="text-sm">No memories match.</div>
+              <div className="text-sm">
+                No memories match the active filters
+                {activeTypes.size + activeTags.size > 0 &&
+                  ` (${[...activeTypes, ...activeTags].length} active)`}
+                .
+              </div>
+              <button
+                onClick={() => {
+                  setActiveTypes(new Set());
+                  setActiveTags(new Set());
+                  setMinImportance(0);
+                }}
+                className="btn-outline mt-3 px-2 py-1 text-xs"
+              >
+                Clear all filters
+              </button>
+            </div>
+          ) : visible.length === 0 ? (
+            <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
+              <FileCode2 size={24} className="mb-2 opacity-50" />
+              <div className="text-sm">No memories in this project yet.</div>
               <div className="mt-1 text-xs">
                 Press <span className="kbd">⌘K</span> to add one.
               </div>
