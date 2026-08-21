@@ -58,8 +58,17 @@ export default function App() {
 
   if (!ready) {
     return (
-      <div className="flex h-screen items-center justify-center text-text-muted">
-        Loading biTurbo…
+      <div className="flex h-screen flex-col items-center justify-center gap-4">
+        <img src="/logo.png" alt="biTurbo" className="h-14 w-14 animate-pulse object-cover" />
+        <div className="font-serif text-lg text-text">biTurbo</div>
+        <div
+          className="h-1 w-32 overflow-hidden rounded-full bg-surface-2"
+          role="progressbar"
+          aria-label="Loading biTurbo"
+        >
+          <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+        </div>
+        <div className="text-xs text-text-muted">Loading your memory layer…</div>
       </div>
     );
   }
