@@ -88,6 +88,15 @@ export function Graph() {
     return () => ro.disconnect();
   }, []);
 
+  // Live count of nodes matching the search box, shown as "n/total".
+  const matchCount = useMemo(() => {
+    if (!data || !query.trim()) return 0;
+    const q = query.trim().toLowerCase();
+    return data.nodes.filter(
+      (n) => n.label.toLowerCase().includes(q) || (n.file_path ?? "").toLowerCase().includes(q),
+    ).length;
+  }, [data, query]);
+
   // Layout pipeline:
   // 1. Render immediately at cheap seed positions (file circle + jittered
   //    children). Always < 5ms even for 10k nodes.
@@ -370,8 +379,16 @@ export function Graph() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search nodes…"
-                className="input w-48 py-1 pl-7 text-xs"
+                className="input w-48 py-1 pl-7 pr-14 text-xs"
               />
+              {query.trim() && (
+                <span
+                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-text-muted"
+                  title="Matching nodes"
+                >
+                  {matchCount}/{data?.nodes.length ?? 0}
+                </span>
+              )}
             </div>
             <button onClick={reload} className="btn-ghost" title="Refresh">
               <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
