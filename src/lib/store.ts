@@ -16,6 +16,20 @@ import type { ContextMenuItem } from "../components/ContextMenu";
 export type View = "overview" | "memories" | "projects" | "graph" | "agents" | "settings";
 export type Theme = "dark" | "light";
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
+export interface ToastEntry {
+  id: number;
+  kind: "ok" | "err" | "info";
+  text: string;
+  action?: ToastAction;
+}
+
+let toastSeq = 0;
+
 interface AppStore {
   view: View;
   setView: (v: View) => void;
@@ -58,14 +72,17 @@ interface AppStore {
   quickAddOpen: boolean;
   setQuickAddOpen: (open: boolean) => void;
 
-  toast: { kind: "ok" | "err" | "info"; text: string } | null;
-  showToast: (t: { kind: "ok" | "err" | "info"; text: string }) => void;
-  clearToast: () => void;
+  toasts: ToastEntry[];
+  showToast: (t: { kind: "ok" | "err" | "info"; text: string; action?: ToastAction }) => void;
+  dismissToast: (id: number) => void;
 
   graph: GraphData | null;
   refreshGraph: () => Promise<void>;
 
   ingestJobs: Record<string, IngestProgress>;
+  /** project_id → backend job id, captured at ingest start for cancellation. */
+  ingestJobIds: Record<string, string>;
+  registerIngestJob: (project_id: string, job_id: string) => void;
   startIngest: (project_id: string, root_path: string) => Promise<string>;
   cancelIngest: (job_id: string) => Promise<void>;
 
@@ -209,14 +226,15 @@ export const useApp = create<AppStore>((set, get) => ({
   quickAddOpen: false,
   setQuickAddOpen: (open) => set({ quickAddOpen: open }),
 
-  toast: null,
+  toasts: [],
   showToast: (t) => {
-    set({ toast: t });
-    setTimeout(() => {
-      if (get().toast === t) set({ toast: null });
-    }, 3500);
+    const id = ++toastSeq;
+    // Errors linger longer; the queue caps so bursts can't flood the UI.
+    const ttl = t.kind === "err" ? 6500 : 3500;
+    set((s) => ({ toasts: [...s.toasts.slice(-3), { id, ...t }] }));
+    setTimeout(() => get().dismissToast(id), ttl);
   },
-  clearToast: () => set({ toast: null }),
+  dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) })),
 
   graph: null,
   refreshGraph: async () => {
@@ -225,6 +243,9 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   ingestJobs: {},
+  ingestJobIds: {},
+  registerIngestJob: (project_id, job_id) =>
+    set((s) => ({ ingestJobIds: { ...s.ingestJobIds, [project_id]: job_id } })),
   startIngest: async (project_id, root_path) => {
     const job = await api.ingestProject(project_id, root_path);
     set((s) => ({

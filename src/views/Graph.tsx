@@ -19,6 +19,7 @@ import type {
   LayoutProgress,
   LayoutError,
 } from "./layoutWorker";
+import { friendlyError } from "../lib/format";
 
 type Pos = { x: number; y: number };
 
@@ -183,7 +184,7 @@ export function Graph() {
       await refreshGraph();
       showToast({ kind: "ok", text: "Graph refreshed" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(false);
     }

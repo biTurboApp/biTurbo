@@ -3,6 +3,7 @@ import { useApp } from "../lib/store";
 import { api } from "../lib/api";
 import { X, Plus } from "lucide-react";
 import clsx from "clsx";
+import { friendlyError } from "../lib/format";
 
 const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection"] as const;
 
@@ -89,7 +90,7 @@ export function QuickAdd() {
       await refreshStats();
       showToast({ kind: "ok", text: "Remembered" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(false);
     }
