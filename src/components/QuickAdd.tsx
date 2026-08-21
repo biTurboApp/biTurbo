@@ -17,7 +17,7 @@ export function QuickAdd() {
   const [content, setContent] = useState("");
   const [type, setType] = useState<(typeof TYPES)[number]>("fact");
   const [tags, setTags] = useState("");
-  const [importance, setImportance] = useState(0.5);
+  const [importance, setImportance] = useState(0.6);
   const [busy, setBusy] = useState(false);
 
   if (!open) return null;
@@ -39,7 +39,7 @@ export function QuickAdd() {
       });
       setContent("");
       setTags("");
-      setImportance(0.5);
+      setImportance(0.6);
       setType("fact");
       setOpen(false);
       await refreshMemories();
@@ -110,7 +110,7 @@ export function QuickAdd() {
                 className="input w-48 py-1 text-xs"
               />
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[10px] text-text-dim">imp</span>
+                <span className="font-mono text-[10px] text-text-dim" title="Importance 0–1: how strongly agents should trust and prioritize this. 0.6 fits typical project knowledge; 0.8+ for cross-project rules.">imp</span>
                 <input
                   type="range"
                   min="0"
