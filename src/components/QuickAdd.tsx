@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp } from "../lib/store";
 import { api } from "../lib/api";
 import { X, Plus } from "lucide-react";
 import clsx from "clsx";
+import { friendlyError } from "../lib/format";
 
-const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection"] as const;
+const TYPES = ["fact", "decision", "preference", "pattern", "episode", "reflection", "code"] as const;
 
 export function QuickAdd() {
   const open = useApp((s) => s.quickAddOpen);
@@ -19,7 +20,7 @@ export function QuickAdd() {
   const [content, setContent] = useState("");
   const [type, setType] = useState<(typeof TYPES)[number]>("fact");
   const [tags, setTags] = useState("");
-  const [importance, setImportance] = useState(0.5);
+  const [importance, setImportance] = useState(0.6);
   const [busy, setBusy] = useState(false);
   // Defaults to the active project; switchable so a memory never lands in
   // the wrong project silently.
@@ -28,6 +29,51 @@ export function QuickAdd() {
   useEffect(() => {
     if (open) setProjectId(currentProjectId);
   }, [open, currentProjectId]);
+  const [filePath, setFilePath] = useState("");
+  const [startLine, setStartLine] = useState("");
+
+  const panelRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
+
+  // Dialog focus management: move focus into the modal on open, restore
+  // it to the opener on close.
+  useEffect(() => {
+    if (!open) return;
+    previouslyFocused.current = (document.activeElement as HTMLElement) ?? null;
+    const t = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    return () => {
+      window.clearTimeout(t);
+      const opener = previouslyFocused.current;
+      if (opener && document.body.contains(opener)) {
+        opener.focus();
+      }
+    };
+  }, [open]);
+
+  // Keep Tab cycling inside the dialog.
+  function trapTab(e: React.KeyboardEvent) {
+    if (e.key !== "Tab" || !panelRef.current) return;
+    const focusables = panelRef.current.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    const inside = active != null && panelRef.current.contains(active);
+    if (e.shiftKey) {
+      if (active === first || !inside) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !inside) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
 
   if (!open) return null;
 
@@ -45,48 +91,62 @@ export function QuickAdd() {
           .filter(Boolean),
         importance,
         source_agent: "human",
+        file_path: type === "code" && filePath.trim() ? filePath.trim() : null,
+        start_line: type === "code" && startLine.trim() ? Number(startLine.trim()) : null,
       });
       setContent("");
       setTags("");
-      setImportance(0.5);
+      setImportance(0.6);
       setType("fact");
+      setFilePath("");
+      setStartLine("");
       setOpen(false);
       await refreshMemories();
       await refreshStats();
       showToast({ kind: "ok", text: "Remembered" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(false);
     }
   }
 
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 pt-[10vh] backdrop-blur-sm animate-fade_in"
-      onClick={() => setOpen(false)}
+      onClick={() => {
+        // Ignore backdrop clicks while the save is in flight so a stray
+        // click can't dismiss a dialog that's mid-submit.
+        if (!busy) setOpen(false);
+      }}
+      onKeyDown={trapTab}
     >
       <div
+        ref={panelRef}
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quickadd-title"
         className="w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-          <div className="flex items-center gap-2 font-serif text-lg">
+          <div id="quickadd-title" className="flex items-center gap-2 font-serif text-lg">
             <span>Remember</span>
             <span className="font-mono text-[10px] text-text-dim">⌘K</span>
           </div>
-          <button onClick={() => setOpen(false)} className="btn-ghost p-1.5">
+          <button onClick={() => setOpen(false)} className="btn-ghost p-1.5" aria-label="Close" title="Close">
             <X size={14} />
           </button>
         </div>
 
         <div className="space-y-3 p-4">
           <textarea
+            ref={textareaRef}
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder="What should the agents remember?"
             rows={4}
-            autoFocus
             className="input resize-none text-sm"
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
@@ -110,6 +170,23 @@ export function QuickAdd() {
                 </button>
               ))}
             </div>
+            {type === "code" && (
+              <div className="flex w-full items-center gap-2">
+                <input
+                  value={filePath}
+                  onChange={(e) => setFilePath(e.target.value)}
+                  placeholder="file path (src/auth/login.ts)"
+                  className="input flex-1 py-1 font-mono text-xs"
+                />
+                <input
+                  value={startLine}
+                  onChange={(e) => setStartLine(e.target.value.replace(/[^0-9]/g, ""))}
+                  placeholder="line"
+                  className="input w-20 py-1 text-xs"
+                  inputMode="numeric"
+                />
+              </div>
+            )}
 
             <div className="ml-auto flex items-center gap-3">
               <input
@@ -125,7 +202,7 @@ export function QuickAdd() {
                 ))}
               </datalist>
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[10px] text-text-dim">imp</span>
+                <span className="font-mono text-[10px] text-text-dim" title="Importance 0–1: how strongly agents should trust and prioritize this. 0.6 fits typical project knowledge; 0.8+ for cross-project rules.">imp</span>
                 <input
                   type="range"
                   min="0"

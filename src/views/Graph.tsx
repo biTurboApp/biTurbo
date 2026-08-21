@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useContextMenu } from "../lib/store";
 import type { GraphNode, GraphEdge } from "../lib/types";
@@ -10,6 +11,7 @@ import {
   RefreshCw,
   Copy,
   ExternalLink,
+  FolderGit2,
 } from "lucide-react";
 import type { ContextMenuItem } from "../components/ContextMenu";
 import type {
@@ -18,6 +20,7 @@ import type {
   LayoutProgress,
   LayoutError,
 } from "./layoutWorker";
+import { friendlyError } from "../lib/format";
 
 type Pos = { x: number; y: number };
 
@@ -46,13 +49,16 @@ const LAYOUT_CY = LAYOUT_H / 2;
 export function Graph() {
   const graph = useApp((s) => s.graph);
   const refreshGraph = useApp((s) => s.refreshGraph);
+  const setAppView = useApp((s) => s.setView);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const showToast = useApp((s) => s.showToast);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
   const showMenu = useContextMenu();
   const [filter, setFilter] = useState<Set<string>>(new Set(NODE_KINDS));
+  const [edgeFilter, setEdgeFilter] = useState<Set<string>>(new Set(Object.keys(EDGE_COLORS)));
   const [query, setQuery] = useState("");
   const [hover, setHover] = useState<string | null>(null);
+  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
   const [posMap, setPosMap] = useState<Record<string, Pos>>({});
   const [layoutMs, setLayoutMs] = useState<number | null>(null);
   const [firstPaintMs, setFirstPaintMs] = useState<number | null>(null);
@@ -67,16 +73,22 @@ export function Graph() {
     vy: number;
   } | null>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
+  // Node order of the in-flight layout request: the worker answers with
+  // positions parallel to this array.
+  const requestNodesRef = useRef<{ uid: string }[]>([]);
 
   const data = useMemo(() => {
     if (!graph) return null;
     const visibleNodes = graph.nodes.filter((n) => filter.has(n.kind));
     const visibleIds = new Set(visibleNodes.map((n) => n.uid));
     const visibleEdges = graph.edges.filter(
-      (e) => visibleIds.has(e.from) && visibleIds.has(e.to),
+      (e) =>
+        edgeFilter.has(e.edge_type) &&
+        visibleIds.has(e.from) &&
+        visibleIds.has(e.to),
     );
     return { nodes: visibleNodes, edges: visibleEdges };
-  }, [graph, filter]);
+  }, [graph, filter, edgeFilter]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -87,6 +99,15 @@ export function Graph() {
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
+
+  // Live count of nodes matching the search box, shown as "n/total".
+  const matchCount = useMemo(() => {
+    if (!data || !query.trim()) return 0;
+    const q = query.trim().toLowerCase();
+    return data.nodes.filter(
+      (n) => n.label.toLowerCase().includes(q) || (n.file_path ?? "").toLowerCase().includes(q),
+    ).length;
+  }, [data, query]);
 
   // Layout pipeline:
   // 1. Render immediately at cheap seed positions (file circle + jittered
@@ -106,15 +127,17 @@ export function Graph() {
     setFirstPaintMs(null);
 
     const reqId = ++layoutReqSeq.current;
+    const reqNodes = data.nodes.map((n) => ({
+      uid: n.uid,
+      kind: n.kind,
+      file_path: n.file_path ?? null,
+      size: n.size,
+    }));
+    requestNodesRef.current = reqNodes;
     layoutWorkerRef.current?.postMessage({
       type: "layout",
       requestId: reqId,
-      nodes: data.nodes.map((n) => ({
-        uid: n.uid,
-        kind: n.kind,
-        file_path: n.file_path ?? null,
-        size: n.size,
-      })),
+      nodes: reqNodes,
       edges: data.edges.map((e) => ({ from: e.from, to: e.to })),
       width: LAYOUT_W,
       height: LAYOUT_H,
@@ -154,10 +177,18 @@ export function Graph() {
     const onMessage = (ev: MessageEvent<LayoutResult | LayoutProgress | LayoutError>) => {
       const m = ev.data;
       if (!m) return;
-      // Drop stale results — a newer request superseded this one.
-      if (m.requestId !== layoutReqSeq.current) return;
       if (m.type === "progress" || m.type === "result") {
-        setPosMap(m.positions as Record<string, Pos>);
+        // The worker returns positions as an array parallel to the request's
+        // node order; convert to the uid-keyed map the renderer uses.
+        const raw: unknown = m.positions;
+        const posMapFromWorker: Record<string, Pos> = Array.isArray(raw)
+          ? Object.fromEntries(
+              requestNodesRef.current
+                .map((n, i) => [n.uid, raw[i]] as [string, Pos | undefined])
+                .filter((entry): entry is [string, Pos] => entry[1] != null),
+            )
+          : (raw as Record<string, Pos>);
+        setPosMap(posMapFromWorker);
         if (m.type === "result") {
           setLayoutMs(Math.round(m.elapsedMs));
           send(
@@ -181,7 +212,7 @@ export function Graph() {
       await refreshGraph();
       showToast({ kind: "ok", text: "Graph refreshed" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(false);
     }
@@ -194,12 +225,19 @@ export function Graph() {
           <Share2 size={28} className="mx-auto mb-3 text-text-dim" />
           <div className="font-serif text-lg">No graph for this project yet.</div>
           <div className="mt-1 text-sm text-text-muted">
-            Run <span className="kbd">ingest_project</span> to build the index, then refresh.
+            Index your code once and the symbol graph appears here. Start from{" "}
+            <span className="kbd">Projects → Re-index code</span>.
           </div>
-          <button onClick={reload} className="btn-primary mt-4">
-            <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
-            Build graph
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <button onClick={() => setAppView("projects")} className="btn-primary">
+              <FolderGit2 size={14} />
+              Open Projects
+            </button>
+            <button onClick={reload} className="btn-outline" disabled={busy}>
+              <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
+              Refresh
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -210,7 +248,41 @@ export function Graph() {
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    setView((v) => ({ ...v, k: Math.max(0.1, Math.min(4, v.k * factor)) }));
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    setView((v) => {
+      const k = Math.max(0.1, Math.min(4, v.k * factor));
+      // Keep the world point under the cursor fixed while zooming.
+      const wx = (mx - v.x) / v.k;
+      const wy = (my - v.y) / v.k;
+      return { k, x: mx - wx * k, y: my - wy * k };
+    });
+  }
+
+  function fitToView() {
+    if (!data || data.nodes.length === 0 || containerRef.current == null) {
+      resetView();
+      return;
+    }
+    const xs = data.nodes.map((n) => posMap[n.uid]?.x).filter((x): x is number => x != null);
+    const ys = data.nodes.map((n) => posMap[n.uid]?.y).filter((y): y is number => y != null);
+    if (xs.length === 0 || ys.length === 0) {
+      resetView();
+      return;
+    }
+    const pad = 60;
+    const minX = Math.min(...xs) - pad;
+    const maxX = Math.max(...xs) + pad;
+    const minY = Math.min(...ys) - pad;
+    const maxY = Math.max(...ys) + pad;
+    const { width, height } = containerRef.current.getBoundingClientRect();
+    const k = Math.max(0.1, Math.min(2, Math.min(width / (maxX - minX), height / (maxY - minY))));
+    setView({
+      k,
+      x: width / 2 - ((minX + maxX) / 2) * k,
+      y: height / 2 - ((minY + maxY) / 2) * k,
+    });
   }
 
   function onMouseDown(e: React.MouseEvent) {
@@ -255,8 +327,11 @@ export function Graph() {
   function onMouseMoveHover(e: React.MouseEvent) {
     if (dragRef.current) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const uid = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const uid = hitTest(mx, my);
     setHover(uid);
+    setHoverPos(uid ? { x: mx, y: my } : null);
   }
 
   function onClick(e: React.MouseEvent) {
@@ -339,6 +414,49 @@ export function Graph() {
           onContextMenu={onContextMenu}
         />
 
+        {/* Zero-node overlay */}
+        {data && data.nodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-12 text-center">
+            <div>
+              <div className="font-serif text-lg text-text-muted">No nodes to display</div>
+              <div className="mt-1 text-sm text-text-muted">
+                {filter.size < NODE_KINDS.length
+                  ? "All node kinds are filtered out — re-enable them in the sidebar."
+                  : "This project has no indexed code yet."}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Hover info as a floating tooltip below lg, where the sidebar
+            (and its hover panel) is hidden. */}
+        {hoverNode && hoverPos && data && data.nodes.length > 0 && (
+          <div
+            className="pointer-events-none absolute z-10 max-w-xs rounded-md border border-border bg-surface/95 p-2 shadow-modal lg:hidden"
+            style={{
+              left: Math.min(hoverPos.x + 14, Math.max(8, size.w - 250)),
+              top: Math.max(8, hoverPos.y - 56),
+            }}
+          >
+            <div className="mb-1 flex items-center gap-2">
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ background: KIND_COLORS[hoverNode.kind as NodeKind]?.fill }}
+              />
+              <span className="text-[10px] uppercase tracking-widest text-text-dim">
+                {hoverNode.kind}
+              </span>
+            </div>
+            <div className="font-serif text-sm text-text">{hoverNode.label}</div>
+            {hoverNode.file_path && (
+              <div className="mt-1 truncate font-mono text-[10px] text-text-dim">
+                {hoverNode.file_path}
+                {hoverNode.start_line ? `:${hoverNode.start_line}` : ""}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Controls */}
         <div className="pointer-events-none absolute inset-0 flex flex-col">
           <div className="pointer-events-auto flex items-center gap-2 border-b border-border-subtle bg-bg/80 p-3 backdrop-blur">
@@ -370,11 +488,22 @@ export function Graph() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search nodes…"
-                className="input w-48 py-1 pl-7 text-xs"
+                className="input w-48 py-1 pl-7 pr-14 text-xs"
               />
+              {query.trim() && (
+                <span
+                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-text-muted"
+                  title="Matching nodes"
+                >
+                  {matchCount}/{data?.nodes.length ?? 0}
+                </span>
+              )}
             </div>
             <button onClick={reload} className="btn-ghost" title="Refresh">
               <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
+            </button>
+            <button onClick={fitToView} className="btn-ghost" title="Fit graph to view">
+              fit
             </button>
             <button onClick={resetView} className="btn-ghost" title="Reset view">
               reset
@@ -444,18 +573,30 @@ export function Graph() {
           <div className="space-y-1">
             {Object.entries(EDGE_COLORS).map(([k, c]) => {
               const n = graph.edges.filter((e) => e.edge_type === k).length;
+              const on = edgeFilter.has(k);
               return (
-                <div
+                <label
                   key={k}
-                  className="flex items-center gap-2 px-2 py-1 text-xs text-text-muted"
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-surface-2"
                 >
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() => {
+                      const next = new Set(edgeFilter);
+                      if (next.has(k)) next.delete(k);
+                      else next.add(k);
+                      setEdgeFilter(next);
+                    }}
+                    className="accent-accent"
+                  />
                   <span
                     className="h-0.5 w-6 rounded"
-                    style={{ background: c }}
+                    style={{ background: c, opacity: on ? 1 : 0.3 }}
                   />
-                  <span className="font-mono">{k}</span>
+                  <span className={clsx("font-mono", !on && "line-through opacity-50")}>{k}</span>
                   <span className="ml-auto font-mono text-[10px] text-text-dim">{n}</span>
-                </div>
+                </label>
               );
             })}
           </div>

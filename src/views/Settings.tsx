@@ -18,6 +18,7 @@ import {
   ArrowUpCircle,
 } from "lucide-react";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import clsx from "clsx";
 
@@ -29,6 +30,9 @@ export function Settings() {
   const theme = useApp((s) => s.theme);
   const setTheme = useApp((s) => s.setTheme);
   const [copied, setCopied] = useState<string | null>(null);
+  const [resolvedDataDir, setResolvedDataDir] = useState<string | null>(null);
+  const [mcpBinary, setMcpBinary] = useState<{ path: string; is_absolute: boolean } | null>(null);
+  const [ruleProjectId, setRuleProjectId] = useState<string | null>(null);
   const [launchOnBoot, setLaunchOnBoot] = useState(false);
   const [bootLoading, setBootLoading] = useState(true);
   const [bootSaving, setBootSaving] = useState(false);
@@ -45,10 +49,22 @@ export function Settings() {
       .finally(() => setBootLoading(false));
   }, []);
 
-  const project = projects.find((p) => p.id === currentProjectId);
+  useEffect(() => {
+    // Same wire command the official path wrapper uses; called directly so
+    // the value reflects this device without extra plugin surface.
+    invoke<string>("plugin:path|resolve_directory", { kind: "appDataDir" })
+      .then((dir) => setResolvedDataDir(dir))
+      .catch(() => setResolvedDataDir(null));
+  }, []);
 
+  useEffect(() => {
+    api
+      .resolveMcpBinaryPath()
+      .then(setMcpBinary)
+      .catch(() => setMcpBinary(null));
+  }, []);
   const projectRule = useMemo(() => {
-    const pid = currentProjectId;
+    const pid = ruleProjectId ?? currentProjectId;
     const start = "\u003c!-- biturbo-rule:start project=\"" + pid + "\" --\u003e";
     const end = "\u003c!-- biturbo-rule:end --\u003e";
     return `${start}
@@ -101,7 +117,7 @@ You have access to biTurbo, a persistent semantic memory layer via MCP.
 - Don't cross-project leak — always pass the resolved \`project_id=PID\`
 - Never store secrets, tokens, PII
 ${end}`;
-  }, [currentProjectId]);
+  }, [currentProjectId, ruleProjectId]);
 
   const globalRule = useMemo(() => {
     const start = "\u003c!-- biturbo-rule:start scope=\"global\" --\u003e";
@@ -208,10 +224,19 @@ ${end}`;
     "Linux:   ~/.local/share/com.biturbo.app",
   ].join("\n");
 
+  // The backend resolves the bundled binary's absolute path; fall back to
+  // the bare name (PATH lookup) when resolution is unavailable.
+  useEffect(() => {
+    api
+      .resolveMcpBinaryPath()
+      .then(setMcpBinary)
+      .catch(() => setMcpBinary(null));
+  }, []);
+
   const mcpConfig = `{
   "mcpServers": {
     "biturbo": {
-      "command": "biturbo-mcp",
+      "command": "${mcpBinary?.path ?? "biturbo-mcp"}",
       "args": [],
       "env": {}
     }
@@ -231,9 +256,30 @@ ${end}`;
         <p className="text-sm text-text-muted">
           Everything is stored locally. SQLite, turbovec indices, and the embedding model cache.
         </p>
-        <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 font-mono text-xs text-text-muted">
-          {dataDir}
-        </pre>
+        {resolvedDataDir ? (
+          <div className="mt-3 flex items-center gap-2 rounded-md border border-border-subtle bg-surface-2 p-3">
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-xs text-text-muted"
+              title={resolvedDataDir}
+            >
+              {resolvedDataDir}
+            </span>
+            <button
+              onClick={() => {
+                shellOpen(resolvedDataDir).catch((e) => {
+                  showToast({ kind: "err", text: `Could not open folder: ${String(e)}` });
+                });
+              }}
+              className="btn-outline shrink-0 px-2 py-0.5 text-[11px]"
+            >
+              Open folder
+            </button>
+          </div>
+        ) : (
+          <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 font-mono text-xs text-text-muted">
+            {dataDir}
+          </pre>
+        )}
       </Section>
 
       <Section icon={AppWindow} title="System tray">
@@ -254,6 +300,7 @@ ${end}`;
             type="button"
             role="switch"
             aria-checked={launchOnBoot}
+            aria-label="Launch on startup"
             disabled={bootLoading || bootSaving}
             onClick={toggleLaunchOnBoot}
             className={clsx(
@@ -329,12 +376,17 @@ ${end}`;
         <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 font-mono text-xs text-text-muted">
 {mcpConfig}
         </pre>
+        {mcpBinary && (
+          <p className="mt-2 text-xs text-text-dim">
+            Resolved binary on this device:{" "}
+            <span className="kbd">{mcpBinary.path}</span>{" "}
+            {mcpBinary.is_absolute ? "(absolute — safe to use as-is)" : "(resolved via PATH)"}
+          </p>
+        )}
         <p className="mt-2 text-xs text-text-dim">
-          If <span className="kbd">biturbo-mcp</span> isn't on your <span className="kbd">PATH</span>,
-          set <span className="kbd">command</span> to the absolute path instead — e.g.{" "}
-          <span className="kbd">/Applications/biTurbo.app/Contents/MacOS/biturbo-mcp</span> (macOS),{" "}
-          <span className="kbd">%LOCALAPPDATA%\\biTurbo\\biturbo-mcp.exe</span> (Windows), or{" "}
-          <span className="kbd">src-tauri/target/release/biturbo-mcp</span> (dev build).
+          Editing the config by hand? If <span className="kbd">biturbo-mcp</span> isn't on your{" "}
+          <span className="kbd">PATH</span>, point <span className="kbd">command</span> at the
+          absolute path shown above.
         </p>
 
         <div className="mt-4">
@@ -431,15 +483,6 @@ ${end}`;
         )}
       </Section>
 
-      <Section icon={Terminal} title="What to read next">
-        <ul className="ml-4 list-disc space-y-1 text-sm text-text-muted">
-          <li><span className="kbd">README.md</span> — quick start + architecture</li>
-          <li><span className="kbd">INSTRUCTIONS.md</span> — for AI agents using MCP</li>
-          <li>Run <span className="kbd">pnpm tauri:dev</span> to launch the desktop app</li>
-          <li>Run <span className="kbd">pnpm mcp:dev</span> to launch the MCP server standalone</li>
-        </ul>
-      </Section>
-
       <Section icon={FileCode2} title="Agent rule blocks">
         <p className="text-sm text-text-muted">
           Drop these into <span className="kbd">AGENTS.md</span>,{" "}
@@ -449,15 +492,32 @@ ${end}`;
           behavior rules.
         </p>
 
+        <div className="mt-4">
+          <label className="mb-1 block text-[10px] uppercase tracking-widest text-text-dim">
+            Project for the rule block
+          </label>
+          <select
+            value={ruleProjectId ?? currentProjectId}
+            onChange={(e) => setRuleProjectId(e.target.value)}
+            className="input w-64"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.id})
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="mt-4 space-y-4">
           <RuleBlock
-            label={`project · ${currentProjectId}`}
+            label={`project · ${ruleProjectId ?? currentProjectId}`}
             text={projectRule}
             copied={copied === "project"}
             onCopy={() => copy("project rule", projectRule)}
             hint={
-              project
-                ? `Paste in the root of your ${currentProjectId} repo.`
+              projects.some((p) => p.id === (ruleProjectId ?? currentProjectId))
+                ? `Paste in the root of your ${ruleProjectId ?? currentProjectId} repo.`
                 : "No active project — defaults to your current selection."
             }
           />
