@@ -209,9 +209,12 @@ export function Projects() {
     setRepairing(projectId);
     try {
       const r = await api.ensureProjectMarkerFiles(projectId);
+      const root = projects.find((pr) => pr.id === projectId)?.root_path ?? "";
       showToast({
         kind: "ok",
-        text: r.created.length ? `Created ${r.created.join(", ")}` : "Already up to date",
+        text: r.created.length
+          ? `Marker files created in ${root || projectId}: ${r.created.join(", ")}`
+          : `Marker files already present in ${root || projectId}`,
       });
     } catch (e) {
       showToast({ kind: "err", text: friendlyError(e) });
@@ -529,7 +532,7 @@ conflict://2
                     onClick={() => repairMarkerFiles(p.id)}
                     disabled={repairing === p.id}
                     className="btn-outline"
-                    title="Generate .biTurbo / .biturboignore if missing (legacy projects)"
+                    title="Creates the marker file agents read to resolve this project (.biTurbo) plus the ignore file, inside this project's root"
                   >
                     <FilePlus2 size={12} />
                     {repairing === p.id ? "Generating…" : "Generate marker files"}

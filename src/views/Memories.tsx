@@ -35,7 +35,9 @@ export function Memories() {
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
   const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
   const [minImportance, setMinImportance] = useState(0);
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "importance">("newest");
   const [loadingMore, setLoadingMore] = useState(false);
+  const memoriesLoading = useApp((s) => s.memoriesLoading);
   const hasMore = useApp((s) => s.hasMoreMemories);
   const loadMore = useApp((s) => s.loadMoreMemories);
   const tags = useApp((s) => s.tags);
@@ -120,7 +122,7 @@ export function Memories() {
 
   const visible = useMemo(() => {
     const source = query.trim() ? results : memories;
-    return source.filter((m) => {
+    const filtered = source.filter((m) => {
       if (m.project_id !== currentProjectId) return false;
       if (activeTypes.size > 0 && !activeTypes.has(m.mem_type)) return false;
       if (activeTags.size > 0) {
@@ -130,7 +132,17 @@ export function Memories() {
       if (m.importance < minImportance) return false;
       return true;
     });
-  }, [query, results, memories, activeTypes, activeTags, minImportance, currentProjectId]);
+    if (!query.trim() && sortBy !== "newest") {
+      const sorted = [...filtered];
+      if (sortBy === "oldest") {
+        sorted.sort((a, b) => a.created_at - b.created_at);
+      } else if (sortBy === "importance") {
+        sorted.sort((a, b) => b.importance - a.importance);
+      }
+      return sorted;
+    }
+    return filtered;
+  }, [query, results, memories, activeTypes, activeTags, minImportance, currentProjectId, sortBy]);
 
   function toggleType(t: string) {
     const n = new Set(activeTypes);
@@ -293,6 +305,16 @@ export function Memories() {
             )}
 
             <div className="ml-auto flex items-center gap-2">
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                className="bg-transparent font-mono text-[10px] uppercase tracking-widest text-text-muted outline-none"
+                aria-label="Sort memories"
+              >
+                <option value="newest">newest</option>
+                <option value="oldest">oldest</option>
+                <option value="importance">importance</option>
+              </select>
               <span className="text-[10px] uppercase tracking-widest text-text-dim">
                 min importance
               </span>
@@ -317,7 +339,26 @@ export function Memories() {
           {searching && (
             <div className="mb-3 text-xs text-text-dim">Searching…</div>
           )}
-conflict://1
+          {memoriesLoading && visible.length === 0 && (
+            <div className="space-y-2" aria-hidden>
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="memory-card animate-pulse" data-testid={`mem-skeleton-${i}`}>
+                  <div className="mb-2 flex items-center gap-2">
+                    <div className="h-3 w-14 rounded-full bg-surface-2" />
+                    <div className="ml-auto h-2 w-16 rounded bg-surface-2" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="h-3 w-full rounded bg-surface-2" />
+                    <div className="h-3 w-4/5 rounded bg-surface-2" />
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <div className="h-2 w-10 rounded bg-surface-2" />
+                    <div className="h-2 w-10 rounded bg-surface-2" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {searchError && (
             <div
               role="alert"
@@ -334,18 +375,7 @@ conflict://1
               </button>
             </div>
           )}
-          {visible.length === 0 && query.trim() ? (
-            <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
-              <Search size={24} className="mb-2 opacity-50" />
-              <div className="text-sm">No results for “{query.trim()}”.</div>
-              <button
-                onClick={() => setQuery("")}
-                className="btn-outline mt-3 px-2 py-1 text-xs"
-              >
-                Clear search
-              </button>
-            </div>
-          ) : visible.length === 0 && (activeTypes.size > 0 || activeTags.size > 0 || minImportance > 0) ? (
+          {!memoriesLoading && visible.length === 0 && query.trim() ? (
             <div className="flex h-64 flex-col items-center justify-center text-center text-text-dim">
               <FileCode2 size={24} className="mb-2 opacity-50" />
               <div className="text-sm">

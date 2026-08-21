@@ -69,6 +69,7 @@ interface AppStore {
   selectMemoryByUid: (uid: string) => Promise<void>;
   memoryOffset: number;
   hasMoreMemories: boolean;
+  memoriesLoading: boolean;
   loadMoreMemories: () => Promise<void>;
   refreshMemories: () => Promise<void>;
 
@@ -182,6 +183,7 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   memories: [],
+  memoriesLoading: false,
   selectedMemoryUid: null,
   setSelectedMemoryUid: (uid) => set({ selectedMemoryUid: uid }),
   hydratedSelected: null,
@@ -217,16 +219,21 @@ export const useApp = create<AppStore>((set, get) => ({
     });
   },
   refreshMemories: async () => {
-    const mems = await api.listMemories({
-      project_id: get().currentProjectId,
-      limit: 50,
-      offset: 0,
-    });
-    set({
-      memories: mems,
-      memoryOffset: mems.length,
-      hasMoreMemories: mems.length === 50,
-    });
+    set({ memoriesLoading: true });
+    try {
+      const mems = await api.listMemories({
+        project_id: get().currentProjectId,
+        limit: 50,
+        offset: 0,
+      });
+      set({
+        memories: mems,
+        memoryOffset: mems.length,
+        hasMoreMemories: mems.length === 50,
+      });
+    } finally {
+      set({ memoriesLoading: false });
+    }
   },
 
   quickAddOpen: false,

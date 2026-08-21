@@ -8,6 +8,7 @@ const KINDS = ["mavis", "claude-code", "cursor", "cline", "custom"];
 
 export function Agents() {
   const agents = useApp((s) => s.agents);
+  const activity = useApp((s) => s.activity);
   const refreshAgents = useApp((s) => s.refreshAgents);
   const showToast = useApp((s) => s.showToast);
 
@@ -116,6 +117,7 @@ conflict://4
           </div>
         )}
         {agents.map((a) => {
+          const activityCount = activity.filter((ev) => ev.agent_id === a.id).length;
           // Honest activity tiers: only genuinely recent activity pulses.
           const age = Date.now() - a.last_seen;
           const isActiveNow = age < 5 * 60 * 1000;
@@ -135,8 +137,18 @@ conflict://4
                     {a.kind}
                   </span>
                 </div>
-                <div className="mt-0.5 text-[11px] text-text-dim">
-                  last seen {timeAgo(a.last_seen)} · id <span className="font-mono">{a.id}</span>
+                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-text-dim">
+                  <span>
+                    last seen {timeAgo(a.last_seen)} · id <span className="font-mono">{a.id}</span>
+                  </span>
+                  {activityCount > 0 && (
+                    <span
+                      className="rounded-full border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[10px]"
+                      title={`Actions recorded in the recent activity window`}
+                    >
+                      {activityCount} recent actions
+                    </span>
+                  )}
                 </div>
               </div>
               {isActiveNow && (
