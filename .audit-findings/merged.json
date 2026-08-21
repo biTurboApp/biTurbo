@@ -1,0 +1,2416 @@
+[
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Graph layout request silently dropped on first mount (worker ref null)",
+  "file": "src/views/Graph.tsx",
+  "lines": "96-124,151-153,685-687",
+  "description": "The layout effect (line 96) is declared before the worker-attach effect (line 151), and React runs mount effects in declaration order. layoutWorkerRef is a module-level ref initialized to null, so on the first-ever mount of <Graph> in a session the effect at line 109 calls layoutWorkerRef.current?.postMessage(...) while the ref is still null. Optional chaining silently swallows the request; the worker effect then creates the worker but nothing re-posts the layout. Result: the first visit to the Graph tab per app launch shows only the jittered seed-circle layout and never refines via Barnes-Hut, until the user toggles a kind filter or the graph refreshes.",
+  "evidence": "const reqId = ++layoutReqSeq.current;\n    layoutWorkerRef.current?.postMessage({ type: \"layout\", requestId: reqId, ... });\n// later, effect declared at line 151:\n    const w = ensureLayoutWorker();\n    layoutWorkerRef.current = w;",
+  "suggestion": "Create the worker before posting: replace layoutWorkerRef.current?.postMessage with const w = ensureLayoutWorker(); layoutWorkerRef.current = w; w.postMessage(...), or declare the worker-attach effect above the layout effect, or initialize the worker lazily at module scope.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Embed-model button uses window.prompt, which is a no-op in Tauri on macOS",
+  "file": "src/views/Projects.tsx",
+  "lines": "166-181",
+  "description": "setModel() collects the embedding model via window.prompt(). Tauri's WKWebView (wry) does not implement the runJavaScriptTextInputPanelWithPrompt WKUIDelegate callback, so on macOS window.prompt() immediately returns null without showing any dialog. The code treats null as cancel and returns, so the 'embed model' button silently does nothing on the app's primary platform \u2014 the feature is unreachable.",
+  "evidence": "async function setModel(projectId: string, current: string | null) {\n    const input = prompt(...);\n    if (input === null) return;",
+  "suggestion": "Replace window.prompt with an in-app modal dialog (extend ConfirmModalHost/useConfirm with a text input). Keep the empty-string-clears semantics.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Memory search invoke has no catch: failures keep stale results silently",
+  "file": "src/views/Memories.tsx",
+  "lines": "61-79",
+  "description": "The debounced semantic-search effect wraps api.recallExplain in try/finally with no catch. If the invoke rejects, the rejection is unhandled and the UI gives no error signal: setSearching(false) runs in finally, the previous query's results stay on screen, and the user believes the stale list is the answer for the new query.",
+  "evidence": "(async () => {\n        setSearching(true);\n        try {\n          const response = await api.recallExplain({ ... });\n        } finally {\n          if (seq === searchSeq.current) setSearching(false);\n        }\n      })();",
+  "suggestion": "Add a catch block that clears results/recallId when seq === searchSeq.current and shows showToast({ kind: 'err', ... }).",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Layout worker cannot cancel superseded Barnes-Hut runs; stale runs burn CPU",
+  "file": "src/views/layoutWorker.ts",
+  "lines": "54-70,357-395",
+  "description": "ctx.onmessage handles each layout request synchronously; barnesHutLayout runs up to 120 iterations over all nodes with no abort check, and the worker is never terminated. Graph.tsx claims 'Cancel any prior in-flight request' but the main thread only drops stale results by requestId \u2014 the worker still computes every superseded run to completion. Rapidly toggling kind filters queues full-price sequential layouts.",
+  "evidence": "ctx.onmessage = (ev) => { ... barnesHutLayout(req.nodes, req.edges, ...); } // no cancellation token",
+  "suggestion": "Pass a generation/cancel flag checked in the iteration loop, early-returning when superseded; or terminate+respawn the worker on new requests.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Graph layout worker failures are only logged to backend, never shown in UI",
+  "file": "src/views/Graph.tsx",
+  "lines": "168-170",
+  "description": "When the layout worker posts an error, the handler calls send(\"error\", ...) which invokes log_frontend \u2014 not the toast system. The user sees nothing: graph silently remains at seed layout.",
+  "evidence": "} else if (m.type === \"error\") {\n        send(\"error\", `[graph] layout failed: ${m.message}`);\n      }",
+  "suggestion": "Call showToast({ kind: 'err', text: `Graph layout failed: ${m.message}` }).",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Empty-state 'Build graph' button only re-fetches and toasts false success",
+  "file": "src/views/Graph.tsx",
+  "lines": "176-189,199-201",
+  "description": "When no graph exists, the CTA 'Build graph' calls reload() which only awaits refreshGraph() \u2014 a fetch that cannot create a graph \u2014 then unconditionally toasts 'Graph refreshed'. For a never-ingested project the button can never succeed at what its label promises.",
+  "evidence": "<button onClick={reload} className=\"btn-primary mt-4\">Build graph</button>",
+  "suggestion": "Either kick off an ingest or relabel the button 'Refresh' and only toast success when a non-null graph came back.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Node hover highlight never cleared when cursor leaves the canvas",
+  "file": "src/views/Graph.tsx",
+  "lines": "336-338,253-260",
+  "description": "onMouseLeave is wired only to onMouseUp which clears dragRef; setHover is never reset. After hovering a node and moving off-canvas, highlight ring + label + dimming stay stuck until pointer re-enters.",
+  "evidence": "onMouseUp={onMouseUp}\nonMouseLeave={onMouseUp}",
+  "suggestion": "onMouseLeave={() => { dragRef.current = null; setHover(null); }}",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Releasing a pan triggers onClick and opens the node under the cursor",
+  "file": "src/views/Graph.tsx",
+  "lines": "262-269,331-338",
+  "description": "No drag-distance threshold between pan and click: any mousemove pans, browser still fires onClick on mouse-up, hitTest runs against moved viewport \u2192 finishing a pan over any non-file node opens that memory accidentally.",
+  "evidence": "function onClick(e) { ... if (n && n.kind !== \"file\" && n.file_path) { setSelected(n.uid); } }",
+  "suggestion": "Track pointer travel in dragRef; ignore click when travel exceeded a few pixels.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "onWheel preventDefault is a no-op inside React's passive wheel listener",
+  "file": "src/views/Graph.tsx",
+  "lines": "210-214,330",
+  "description": "React 17+ registers onWheel at root as passive, so e.preventDefault() throws 'Unable to preventDefault inside passive event listener' and does nothing. Zoom works but scroll/pinch suppression never happens and every wheel tick logs an error.",
+  "evidence": "function onWheel(e: React.WheelEvent) {\n    e.preventDefault();",
+  "suggestion": "Attach wheel handler via canvasRef.current.addEventListener('wheel', handler, { passive: false }) in an effect.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Ingest progress card shows an arbitrary job when several projects index at once",
+  "file": "src/views/Projects.tsx",
+  "lines": "33,242-275",
+  "description": "activeIngest = Object.values(ingestJobs)[0] picks whichever job inserted first; with two concurrent ingests only one progress card shows and it never says which project it refers to.",
+  "evidence": "const activeIngest = Object.values(ingestJobs)[0] as IngestProgress | undefined;",
+  "suggestion": "Render one progress card per entry in ingestJobs, each labeled with progress.project_id.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Watch toggle duplicates server state into local state that projects refresh clobbers",
+  "file": "src/views/Projects.tsx",
+  "lines": "27-31,134-148,408",
+  "description": "watchOn mirrors p.watch_enabled into local state via effect on [projects]; toggleWatch reads/writes only local copy. Any refreshProjects() landing between setWatch resolving and local setState rebuilds watchOn from stale snapshot and can flip the row back.",
+  "evidence": "useEffect(() => { ...setWatchOn(next); }, [projects]);\nawait api.setWatch(projectId, root, enabled);\nsetWatchOn((s) => ({ ...s, [projectId]: enabled }));",
+  "suggestion": "Drop the mirror: call api.setWatch then await refreshProjects() and render from p.watch_enabled.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Settings copy() swallows clipboard errors with an unhandled rejection",
+  "file": "src/views/Settings.tsx",
+  "lines": "173-179",
+  "description": "copy() chains .then() on clipboard.writeText with no .catch. On failure nothing shown and rejection unhandled \u2014 inconsistent with all other clipboard uses which show 'Clipboard blocked'.",
+  "evidence": "navigator.clipboard.writeText(text).then(() => { ... });",
+  "suggestion": "Add .catch(() => showToast({ kind: 'err', text: 'Clipboard blocked' })).",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Parallel MCP installs clobber the single mcpInstalling slot",
+  "file": "src/views/Settings.tsx",
+  "lines": "189-201,345-364",
+  "description": "mcpInstalling is one string; clicking a second target while first is in flight overwrites state, first button re-enables mid-flight, and whichever invoke settles first clears the other's installing state.",
+  "evidence": "setMcpInstalling(target); try { ... } finally { setMcpInstalling(null); }",
+  "suggestion": "Track in-flight targets as Set<string>, disable all buttons while non-empty, or serialize installs.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "MCP 'installed' checkmarks are session-only and never detect existing configs",
+  "file": "src/views/Settings.tsx",
+  "lines": "36,345-364",
+  "description": "mcpInstalled starts empty and only grows after successful install this session. On relaunch all five targets render as not-installed even when configs exist.",
+  "evidence": "const [mcpInstalled, setMcpInstalled] = useState<Set<string>>(new Set());",
+  "suggestion": "On mount probe each target (dry-run/status variant of install_mcp_config) to seed mcpInstalled.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Fire-and-forget invokes (recall feedback, load more) have no error handling",
+  "file": "src/views/Memories.tsx",
+  "lines": "288-289,296-305,38-42",
+  "description": "Three invokes launched with void and no .catch: implicit recall feedback, explicit feedback .then(toast) without rejection path, handleLoadMore try/finally discards error. Backend failures produce unhandled rejections and zero user feedback.",
+  "evidence": "void api.submitRecallFeedback(recallId, m.uid, 1, \"implicit\");",
+  "suggestion": "Add .catch handlers that showToast({ kind: 'err', ... }).",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Pagination indicator hidden above 200 memories and page math is misleading",
+  "file": "src/views/Memories.tsx",
+  "lines": "324-328",
+  "description": "Footer shows '\u00b7 page N' only while memories.length < 200 \u2014 hides indicator exactly when pagination matters most. Math.floor(memoryOffset / 50) reads 'page 1' after first load-more while viewing page 1 content from offset 0.",
+  "evidence": "{!query && memories.length < 200 && (<> \u00b7 page {Math.floor(memoryOffset / 50) || 1}</>)}",
+  "suggestion": "Show 'X loaded' plus page count computed from total, or simply memories.length loaded.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Settings claims the MCP server exposes 20 tools; it exposes 27",
+  "file": "src/views/Settings.tsx",
+  "lines": "372-376",
+  "description": "MCP section copy says 'your agent has 20 tools' but server registers 27 tools including update, get_memory, list, recall_explain, operations tools, etc. Stale count misleads users configuring agents.",
+  "evidence": "Once connected, your agent has 20 tools (search, remember, forget, ingest_project, consolidate, list_projects, \u2026).",
+  "suggestion": "Update copy to 27 or derive count from schema at build time.",
+  "slice": "frontend-views",
+  "sources": [
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Deleting the current project leaves currentProjectId dangling, causing stale UI and orphan memory writes",
+  "file": "src/components/Sidebar.tsx",
+  "lines": "136-155",
+  "description": "deleteProject() never resets currentProjectId when the deleted project is the active one, and store.refreshProjects() cannot fix it because its fallback (`if (!get().currentProjectId && ...)`) is dead code \u2014 currentProjectId is initialized to \"default\" and never emptied. After deleting the active project: App.tsx's refetch effect (keyed on currentProjectId) doesn't re-run so Memories/tags show the deleted project's data, refreshGraph() fails and leaves the OLD project's graph rendered, and QuickAdd keeps submitting remember({project_id: <deleted-id>}) \u2014 backend memory::remember does no project-existence check, so memories are silently written with a dangling project_id that no view will ever list.\n\n**Merged finding:** Two entry points share this bug: Sidebar.tsx deleteProject() and Projects.tsx remove(); both need the fix plus a store-level guard in refreshProjects().",
+  "evidence": "await api.deleteProject(id);\nawait Promise.all([refreshProjects(), refreshStats(), refreshGraph().catch(() => {})]);",
+  "suggestion": "After a successful delete, if id === currentProjectId, set currentProjectId to the first remaining project (or \"default\") before refreshing; make refreshProjects() also validate that currentProjectId still exists.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json",
+   "views1.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Consolidate button gets stuck disabled forever when the consolidate run fails",
+  "file": "src/components/TopBar.tsx",
+  "lines": "27-52",
+  "description": "runConsolidate() sets consolidating=true and relies solely on the 'consolidate:done' Tauri event to reset it (the IPC call returns immediately after enqueueing). The backend scheduler's error branch only logs \u2014 no event emitted on failure. If the consolidate run errors, the button stays disabled with a pulsing icon indefinitely: no toast, no error, no way to retry except restarting the app.\n\n**Merged finding:** Root cause is backend: scheduler.rs run_once() only tracing::warn!s on error and never emits a consolidate:error event.",
+  "evidence": "setConsolidating(true);\ntry {\n  await api.consolidate(currentProjectId); // returns immediately (enqueue)\n} catch (e) {\n  setConsolidating(false);\n  showToast({ kind: \"err\", text: String(e) });\n}",
+  "suggestion": "Have the backend emit 'consolidate:error' from the Err branch (and listen for it here), or poll consolidateStatus() with a timeout after enqueue.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json",
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "loadMoreMemories trim keeps the OLDEST 500 memories and deletes the newest page from the list",
+  "file": "src/lib/store.ts",
+  "lines": "159-175",
+  "description": "list_memories returns newest-first (ORDER BY created_at DESC), so combined = [...s.memories, ...batch] is ordered newest\u2192oldest. The comment says 'keep the newest 500 memories' but combined.slice(-500) keeps the LAST 500 elements \u2014 i.e. the oldest ones \u2014 and discards the first page (the newest 50 memories). Trigger: scroll down through more than 500 memories; once the 11th page loads, the top of the list (most recent memories) vanishes and the scroll position jumps.",
+  "evidence": "const combined = [...s.memories, ...batch];\nconst trimmed = combined.length > 500 ? combined.slice(-500) : combined;",
+  "suggestion": "Use combined.slice(0, 500) for a newest-first list (keeping offset math consistent), or drop the trim and virtualize the list.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "api.consolidate mis-types its payload as ConsolidateReport but the backend returns ConsolidateStatus",
+  "file": "src/lib/api.ts",
+  "lines": "156-159",
+  "description": "The invoke wrapper declares invoke<ConsolidateReport>(\"consolidate_now\"), but commands.rs consolidate_now returns BiResult<ConsolidateStatus>. Any consumer reading .decayed/.merged/.duplicates_found off the resolved value gets undefined. Today TopBar ignores the result so this is latent, but the wrapper is the typed contract for future callers.",
+  "evidence": "consolidate: (project_id?: string | null) =>\n  invoke<ConsolidateReport>(\"consolidate_now\", { projectId: project_id ?? null }),",
+  "suggestion": "Type the wrapper as invoke<ConsolidateStatus> and read the report from .last_report when needed.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "store.startIngest/cancelIngest key ingestJobs by job_id while events key by project_id, orphaning entries",
+  "file": "src/lib/store.ts",
+  "lines": "209-232",
+  "description": "startIngest inserts the progress entry under [job.job_id], but the 'ingest:progress' listener upserts under p.project_id and 'ingest:done'/'ingest:error' delete under d.project_id. The job_id-keyed entry is never updated or removed: TopBar's activeIngests filter shows a 'queued\u2026' spinner forever, and cancelIngest(job_id) removes the wrong key leaving the real progress entry stuck. The 'ingest:done' handler also builds {...s.ingestJobs[d.project_id], phase: \"done\"} which spreads undefined and casts an object missing required fields into IngestProgress when no progress entry exists yet.",
+  "evidence": "set((s) => ({ ingestJobs: { ...s.ingestJobs, [job.job_id]: { project_id, phase: \"queued\", ... } } }));\n// listeners: [p.project_id]: p   /   const { [d.project_id]: _, ...rest } = s.ingestJobs;",
+  "suggestion": "Key entries consistently by project_id everywhere (events already do), have cancelIngest take project_id, and remove the `as IngestProgress` cast.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "loadMoreMemories has no in-flight guard: duplicate pages and cross-project rows after switching projects",
+  "file": "src/lib/store.ts",
+  "lines": "159-176",
+  "description": "loadMoreMemories reads get().memoryOffset and get().currentProjectId before awaiting, then appends unconditionally after the await. Two rapid scroll triggers both read the same offset and append the same batch twice (duplicate uids). Worse, if the user switches projects while a page is in flight, the old project's batch is appended to the new project's freshly refreshed memories array \u2014 mixed-project list content with no visual indication.",
+  "evidence": "loadMoreMemories: async () => {\n  const offset = get().memoryOffset;\n  const batch = await api.listMemories({ project_id: get().currentProjectId, limit: 50, offset });\n  set((s) => { const combined = [...s.memories, ...batch]; ... });\n}",
+  "suggestion": "Capture projectId at call time and compare against get().currentProjectId before set(); add an isLoadingMore flag that makes concurrent calls no-op.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Overview 12-week activity heatmap is built from at most 25 activity entries, rendering it mostly empty",
+  "file": "src/views/Overview.tsx",
+  "lines": "23-31",
+  "description": "The heatmap buckets 84 days (12*7) of activity, but the underlying activity array comes from bootstrap's recent_activity(state, 25) and refreshActivity(60) \u2014 and refreshActivity is only invoked after a manual consolidate. With heavy agent usage, 25 entries may cover only the last few hours, so the 'Activity \u00b7 12 weeks' card shows a handful of lit cells near today and 80+ permanently empty days regardless of real history.",
+  "evidence": "const days = 12 * 7;\nconst buckets = new Array(days).fill(0);\nfor (const a of activity) { // activity capped at 25 (bootstrap) / 60 (refresh)",
+  "suggestion": "Add a dedicated backend query aggregating per-day counts over 84 days (GROUP BY date) instead of paginating raw activity rows, or relabel the card.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Overlapping confirm() calls: second dialog overwrites the resolver and the first promise never settles",
+  "file": "src/lib/store.ts",
+  "lines": "250-283",
+  "description": "confirm() stores its Promise resolver in a single module-local slot and replaces confirmState. If two callers await confirm() concurrently (bulk-forgetting in a loop, two components triggering deletes), the second call overwrites both the visible dialog and the resolver slot: caller #1's promise never resolves, so its awaiting code (including finally/cleanup) hangs forever.",
+  "evidence": "confirm: (opts) => {\n  set({ confirmState: opts });\n  return new Promise<boolean>((resolve) => { registerConfirmResolver(resolve); });\n},",
+  "suggestion": "Queue resolvers (FIFO) and only show the next dialog after the current resolves, or resolve previous promise(false) when superseded.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "MemoryCard is a click-only div: keyboard users cannot open memory details",
+  "file": "src/components/MemoryCard.tsx",
+  "lines": "44-48",
+  "description": "The card's entire interaction model is onClick/onContextMenu on a plain <div> \u2014 no tabIndex, no role, no onKeyDown. On the Overview grid and Memories list, keyboard-only users cannot select/open a memory detail. Feedback thumbs buttons expose only title tooltips (no aria-label).",
+  "evidence": "<div\n  onClick={onClick}\n  onContextMenu={handleContext}\n  className={clsx(\"memory-card\", active && \"active\")}>",
+  "suggestion": "Render as a button (or add role=\"button\", tabIndex={0}, onKeyDown Enter/Space), and give feedback buttons aria-labels.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Modals lack focus traps: Tab escapes ConfirmModal despite aria-modal, QuickAdd has no dialog semantics",
+  "file": "src/components/ConfirmModal.tsx",
+  "lines": "91-101",
+  "description": "ConfirmModal declares role=\"dialog\" aria-modal=\"true\" but implements no focus trap \u2014 Tab cycles out of the modal into background controls visually blocked by the backdrop. QuickAdd's overlay has no role=\"dialog\", no aria-modal, and no Escape handler of its own beyond App's global one. Both modals leave screen-reader/keyboard users stranded.",
+  "evidence": "<div className=\"fixed inset-0 z-50 ...\" onMouseDown={...} role=\"dialog\" aria-modal=\"true\"> <!-- no Tab trap -->",
+  "suggestion": "Add a focus trap cycling Tab within the modal; add role=\"dialog\" aria-modal=\"true\" aria-label to QuickAdd's overlay.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Toast is never announced to assistive tech (missing role=status / aria-live)",
+  "file": "src/components/Toast.tsx",
+  "lines": "8-19",
+  "description": "Toasts carry operation results including errors ('Ingest failed: \u2026'), but the container is a plain clickable div with no role=\"status\"/aria-live. Screen readers get no notification; the feedback channel is sight-only for destructive-operation outcomes.",
+  "evidence": "<div onClick={clear} className={clsx(\"fixed bottom-4 left-1/2 z-50 ...\", ...)}>",
+  "suggestion": "Add role=\"status\" aria-live=\"polite\" (role=\"alert\" for kind===\"err\") to the toast root.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Project-change effect fires refreshMemories without catch, causing unhandled promise rejections",
+  "file": "src/App.tsx",
+  "lines": "34-39",
+  "description": "refreshTags() and refreshGraph() are fire-and-forget with .catch(() => {}), but refreshMemories() is called bare. If list_memories rejects (e.g. right after deleting the active project), every project switch produces an unhandled promise rejection and the Memories view silently keeps stale data with no toast.",
+  "evidence": "refreshMemories();            // \u2190 no .catch\nrefreshTags().catch(() => {});\nrefreshGraph().catch(() => {});",
+  "suggestion": "Mirror the siblings: refreshMemories().catch(() => {}) \u2014 or surface a toast so failures aren't fully swallowed.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "MemoryDetail related-memories search can resolve out of order and render stale results",
+  "file": "src/components/MemoryDetail.tsx",
+  "lines": "30-49",
+  "description": "The related-items effect fires api.search per selected memory with no cancellation or staleness check. Clicking two related items quickly starts two searches; if the first resolves after the second, setRelated overwrites the newer memory's related list with results computed from the previous memory's content.",
+  "evidence": "(async () => {\n  const hits = await api.search({ project_id: memory.project_id, query: memory.content.slice(0, 200), k: 6 });\n  setRelated(hits.filter(...));\n})();",
+  "suggestion": "Add a local `cancelled` flag set in the effect cleanup and check it before setRelated.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "QuickAdd shows an error toast after a successful save when the post-save refresh fails, inviting duplicate entries",
+  "file": "src/components/QuickAdd.tsx",
+  "lines": "40-50",
+  "description": "submit() closes the modal and clears the form, then awaits refreshMemories()/refreshStats() inside the same try block. If either refresh rejects after api.remember succeeded, control jumps to catch and shows an error toast \u2014 the user believes the memory was NOT saved and retypes it, creating a duplicate. The save already succeeded and the form was cleared, so the error is also mis-attributed.",
+  "evidence": "setContent(\"\"); setTags(\"\"); setOpen(false);\nawait refreshMemories();\nawait refreshStats();\nshowToast({ kind: \"ok\", text: \"Remembered\" });\n} catch (e) {\n  showToast({ kind: \"err\", text: String(e) }); // fires even though remember() succeeded",
+  "suggestion": "Show the success toast immediately after api.remember resolves; move refreshes outside the try.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "tokenizeCode treats any unquoted '#...' to end-of-line as a comment, mis-highlighting real code",
+  "file": "src/lib/format.ts",
+  "lines": "130-134",
+  "description": "The comment alternative (\\/\\/.*$|#.*$) matches a '#' anywhere outside a string and swallows the rest of the line. In JS/TS code memories, private-field access like this.#count++ dims everything from '#' onward as a comment; unquoted hex colors (color: #fff) get the same treatment.",
+  "evidence": "const pattern = /(\\/\\/.*$|#.*$)|(\"(?:[^\"\\\\]|\\\\.)*\"|...)|(\\b\\d+(?:\\.\\d+)?\\b)|([A-Za-z_$][\\w$]*)|(\\s+)|(.)/g;",
+  "suggestion": "Restrict '#' comments to languages that use them (pass language flag from memory.language) or require '#' at line start/preceded by whitespace.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Heatmap weekday labels are misaligned: columns are rolling 7-day chunks, not calendar weeks",
+  "file": "src/components/Heatmap.tsx",
+  "lines": "6-24",
+  "description": "dayLabels [\"M\",\"\",\"W\",\"\",\"F\",\"\"] assumes row 0 of every column is Monday, but Overview fills values oldest-first as rolling day buckets ending TODAY. Column boundaries land on an arbitrary weekday; the M/W/F labels only line up when (today \u2212 83 days) happens to be a Monday \u2014 wrong for 6 out of 7 possible todays.",
+  "evidence": "const dayLabels = [\"M\", \"\", \"W\", \"\", \"F\", \"\", \"\"];",
+  "suggestion": "Pad the front of the bucket array so column 0 starts on a Monday (like GitHub's contribution graph), or drop the letter labels.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "truncatePath exceeds maxLen when the filename alone is longer than the limit",
+  "file": "src/lib/format.ts",
+  "lines": "77-90",
+  "description": "truncatePath only trims by dropping leading directories. When the final path segment is itself longer than maxLen (long generated/test filenames common in code indexes), the loop breaks immediately and returns '\u2026/' + filename with no character-level cap \u2014 can return 60+ chars for maxLen 40, overflowing the code-chip layout.",
+  "evidence": "while (segments.length > 0) {\n  const next = segments.pop() + \"/\" + result;\n  if ((\"\u2026/\" + next).length > maxLen) break;",
+  "suggestion": "After directory trimming, fall back to character truncation of the filename keeping the extension if possible.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Persist the active project across restarts instead of always resetting to the first indexed project",
+  "file": "src/lib/store.ts",
+  "lines": "235-242",
+  "description": "bootstrapOnce() always picks projects.find(p => p.indexed_count > 0)?.id ?? projects[0]?.id ?? \"default\", discarding whatever project the user was working in. Every app launch lands on an arbitrary project, forcing multi-project users to re-select context each session. The theme already demonstrates the localStorage pattern.",
+  "evidence": "const currentProjectId =\n  projects.find((p) => p.indexed_count > 0)?.id ??\n  projects[0]?.id ?? \"default\";",
+  "suggestion": "Store the last active project id in localStorage (validate it still exists before using, else fall back).",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Sidebar footer presents total registered agents as a live 'connected' status",
+  "file": "src/components/Sidebar.tsx",
+  "lines": "33-34",
+  "description": "connectedAgents = agents.length counts every agent ever registered (table grows forever), displayed next to a green status dot implying live connectivity. Agents.tsx separately uses a 24h last_seen window for its 'live' badge, so the two surfaces disagree. The number goes stale: agents[] only refreshed on bootstrap and manual refresh.",
+  "evidence": "const connectedAgents = agents.length;\n<div className=\"font-medium text-text\">{connectedAgents} agent{...}</div>",
+  "suggestion": "Compute count with same recency window as Agents.tsx and label it 'seen recently', or drop the status-dot affordance.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "main.tsx reads localStorage unguarded at module scope and can crash the whole app at boot",
+  "file": "src/main.tsx",
+  "lines": "32-35",
+  "description": "The ZOOM_KEY write just above is wrapped in try/catch for quota/private-mode failures, but the read localStorage.getItem(ZOOM_KEY) is not. In environments where localStorage access throws (locked-down WebView settings), this top-level throw executes before ReactDOM.createRoot, leaving a blank window with no error surface.",
+  "evidence": "const raw = localStorage.getItem(ZOOM_KEY) ?? fromEnv;  // \u2190 unguarded",
+  "suggestion": "Wrap the read in try/catch like the write, defaulting to fromEnv/undefined on failure.",
+  "slice": "frontend-core",
+  "sources": [
+   "views2.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Stop walking .git and hidden dirs: hidden(false) has no .git exclusion",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "212-222",
+  "description": "The ingest walk sets .hidden(false), which disables the only filter that excludes dot-directories. Verified against ignore 0.4.31 source: there is NO hardcoded .git skip \u2014 has_git only gates require_git semantics. So the walker descends into .git/ (objects, hooks) on every ingest: every loose object is stat()'d via e.path().is_file() (tens of thousands of stats on big repos), and any file inside .git with a recognized extension gets parsed and indexed. Worse, in folders without .git, require_git (default true) means NO gitignore filtering applies at all, so hidden dirs like .venv/, .tox/, .mypy_cache/ are fully indexed. build_structure_summary uses hidden(true) (line 1495), so the UI structure tree contradicts what is actually indexed.",
+  "evidence": "WalkBuilder::new(root)\n    .follow_links(false)\n    .standard_filters(true)\n    ...\n    .add_custom_ignore_filename(\".biturboignore\")\n    .hidden(false)",
+  "suggestion": "Add an explicit filter excluding path components named .git (and consider .jj), or use .filter_entry; alternatively add \".git/\" to the generated .biturboignore. Align build_structure_summary's hidden setting with the ingest walk.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Fix graph file-node UIDs: absolute file_path breaks edge connectivity",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "685-695",
+  "description": "Chunks are stored with an ABSOLUTE file_path (parse_one_file line 1022), and edges reference rel-based UIDs built as '{project_id}::file::{rel}'. get_project_graph rebuilds the file-node UID from the stored absolute path using only trim_start_matches('/'), producing proj::file::Users/me/proj/src/a.rs. These node UIDs never match the from_uid/to_uid values written by ingest (member_of and imports edges), so in the graph view every file node is orphaned from its chunks and all edges dangle \u2014 the code graph feature is broken for any project root deeper than '/'.",
+  "evidence": "let file_uid = format!(\"{project_id}::file::{}\", file_path.trim_start_matches('/'));",
+  "suggestion": "Reconstruct rel by stripping the project root (store root_path on the project row and strip_prefix it), or persist the rel path in a column and build the UID from that.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Deduplicate chunk UIDs: start_line-only key overwrites same-line chunks",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "1017-1029",
+  "description": "Chunk UID is '{project_id}::{rel}::{start_line}' \u2014 start_line only. Any two definitions captured on the same starting line (minified JS with dozens of functions on line 1, one-line Rust impl blocks) produce colliding UIDs. INSERT OR REPLACE silently keeps only the last one \u2014 earlier definitions vanish from index and recall.",
+  "evidence": "let uid = format!(\"{project_id}::{}::{}\", pf.rel, chunk.start_line);",
+  "suggestion": "Include end_line and a disambiguating counter in the UID; reject same-start duplicates in collect_chunks.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Do not delete good index data on transient per-file errors",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "306-312,455-469",
+  "description": "Any per-file failure (unreadable: EACCES/EBUSY while an editor holds the file, or temporarily non-UTF-8 content) pushes the rel into parse_error_rels, which deletes the indexed_files row AND adds existing chunk UIDs to stale_uids so vectors are permanently removed on replay. A single transient sharing-violation during a watch-triggered ingest wipes that file's chunks until the next event re-indexes it; recall silently loses the file.",
+  "evidence": "if let Some(e) = &pf.error {\n    result.errors.push(e.clone());\n    parse_error_rels.push(pf.rel.clone());\n    stale_file_uids.push(pf.file_uid.clone());",
+  "suggestion": "On per-file error, leave existing indexed_files row and chunks untouched (only report in result.errors); reserve deletion for files that no longer exist on disk.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Run watcher ingest off the tokio runtime (blocking call in async task)",
+  "file": "src-tauri/src/io.rs",
+  "lines": "253-266",
+  "description": "The notify callback spawns an async task that directly calls run_watch_ingest_blocking \u2014 a full project ingest (tree-sitter parse, ONNX embed_batch, vector replay) \u2014 on a tauri::async_runtime worker thread. This blocks that tokio worker for the whole ingest, stalling other async commands/IPC sharing the runtime. operations.rs deliberately uses dedicated std::thread for manual ingests; the watch path bypasses that.",
+  "evidence": "tauri::async_runtime::spawn(async move {\n    tokio::time::sleep(Duration::from_secs(2)).await;\n    let _ = crate::operations::run_watch_ingest_blocking(&state_clone, &pid, &root);",
+  "suggestion": "Use tauri::async_runtime::spawn_blocking (or spawn a named std::thread like operations::spawn_ingest).",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Surface watcher setup failures instead of silently marking project watched",
+  "file": "src-tauri/src/io.rs",
+  "lines": "273-281,196-203",
+  "description": "enable_watch writes watch_enabled=1 first, then spawn_watcher swallows both failure modes: recommended_watcher creation error \u2192 'Err(_) => return', and watcher.watch(...) error \u2192 'let _ ='. Project persisted as watched but nothing watches; resume_watches re-spawns a failing watcher every launch; no error reaches the user.\n\n**Merged finding:** Same subsystem: spawn_watcher swallows creation/registration errors and the watch-ingest Result is discarded on the non-queued path; both should propagate/log.",
+  "evidence": "Ok(w) => w,\nErr(_) => return,\n};\nlet _ = watcher.watch(root, notify::RecursiveMode::Recursive);",
+  "suggestion": "Make spawn_watcher return BiResult<()>; propagate watch() errors; on failure revert watch_enabled or report.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json",
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Guard against concurrent ingests of the same project",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "355-368,455-500",
+  "description": "Nothing serializes ingests per project: a watch-triggered ingest and a manual/multi ingest can run simultaneously (operation lock is per-operation-id, not per-project). Both compute stale_uids/changed sets from their own DB snapshots (TOCTOU), and code_edges has no UNIQUE(project_id, from_uid, to_uid, edge_type) constraint, so interleaved delete+insert waves leave duplicate edge rows that accumulate across runs and inflate the graph.",
+  "evidence": "let conn = state.db.conn()?;\nlet mut stale_uids = Vec::new();\nfor rel in changed_rels.iter().chain(parse_error_rels.iter()) { ... }",
+  "suggestion": "Add a per-project ingest mutex/guard (project-scoped file lock like persistence's mutation lock), and add a UNIQUE index on code_edges(project_id, from_uid, to_uid, edge_type) with INSERT OR IGNORE.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Fix '../' import resolution: trim_start_matches('.') collapses parent traversal",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "1424-1444",
+  "description": "For relative imports: candidate = base.join(import.trim_start_matches('.').trim_start_matches('/')). trim_start_matches('.') strips ALL leading dots, so '../utils/helper.ts' becomes 'utils/helper.ts' and resolves to <importing-dir>/utils/helper.ts instead of <parent>/utils/helper.ts. Every parent-relative import produces a wrong or missing edge; '../../x' collapses the same way. Only './' imports resolve correctly.",
+  "evidence": "let base = if import.starts_with('/') { root.to_path_buf() } else { from_file.parent()?.to_path_buf() };\nlet candidate = base.join(import.trim_start_matches('.').trim_start_matches('/'));",
+  "suggestion": "Count leading '../' segments, pop that many components from from_file.parent(), then join the remainder.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Restrict JS/TS import query to require/import (no #eq? predicate)",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "1288-1293",
+  "description": "The js/ts import query captures the string argument of ANY call_expression with an identifier callee \u2014 unlike the Lua query which has (#eq? @fn \"require\"). Test/assertion calls like it(\"renders\"), describe(\"suite\"), fetch(\"/api\") all land in imports. Consequences: imports_json fills with garbage; resolve_import runs ~17 Path::exists() syscalls per bogus import; the by_basename fallback turns any first segment matching an existing file stem into a FALSE imports edge.",
+  "evidence": "(call_expression function: (identifier) @fn arguments: (arguments (string) @imp))",
+  "suggestion": "Add (#eq? @fn \"require\") and limit to import/export statements; skip resolving imports that don't look like paths/modules.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Cap ingest file size and stream parsing to bound memory",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "969-975,258-277",
+  "description": "parse_one_file does read_to_end with no size limit before any check, and the walk never sets WalkBuilder::max_filesize. Combined with hidden(false) this means every .git packfile (hundreds of MB) is fully buffered then rejected as non-UTF-8, and a large generated dump is fully read + tree-sitter-parsed (10-30x expansion) \u2192 multi-GB spikes/OOM risk. The entire parsed: Vec<ParsedFile> is materialized before the single write transaction, so peak memory scales with total changed content.",
+  "evidence": "let mut bytes = Vec::new();\nif std::fs::File::open(path).and_then(|mut file| file.read_to_end(&mut bytes)).is_err() {",
+  "suggestion": "Set WalkBuilder::max_filesize (e.g. 1-2 MB) and/or early-continue via metadata().len(); flush ParsedFile batches through the DB write instead of accumulating all results.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Deduplicate import_folder: re-importing a folder duplicates every memory",
+  "file": "src-tauri/src/io.rs",
+  "lines": "50-81",
+  "description": "remember() unconditionally creates a new memory per chunk; import_folder has no hash/UID dedup, so importing the same folder twice doubles all memories (and re-embeds everything). Also files_imported += 1 fires even when every chunk errored, and unreadable/non-UTF-8 files are silently skipped with no record in result.errors.",
+  "evidence": "match crate::memory::remember(state, input) {\n    Ok(_) => result.memories_created += 1,\n    Err(e) => result.errors.push(format!(\"{rel} chunk {i}: {e}\")),\n}\nresult.files_imported += 1;",
+  "suggestion": "Key imported memories by (file_path, chunk index, content hash) and upsert/skip existing; only count files_imported when >=1 chunk succeeded; push read failures into result.errors.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Make .biturboignore creation non-fatal and race-safe",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "101-131",
+  "description": "ensure_biturboignore hard-fails the ENTIRE ingest if .gitignore exists but can't be read, or if .biturboignore can't be written \u2014 ingesting a read-only checkout/mount is impossible even though the ignore file is optional. TOCTOU: two concurrent first-ingests can both pass exists() and write concurrently. It also mutates the user's repository working tree as a side effect of indexing.",
+  "evidence": "let gitignore_content = std::fs::read_to_string(&gitignore)\n    .map_err(|e| BiError::Ingest(format!(\"failed to read {}: {e}\", gitignore.display())))?;",
+  "suggestion": "Log-and-continue on ensure_biturboignore errors instead of '?'; write via temp file + atomic rename, or skip creation when root isn't writable.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Add path filtering and cooldown to file watcher events",
+  "file": "src-tauri/src/io.rs",
+  "lines": "226-266",
+  "description": "Every Create/Modify/Remove event anywhere under root triggers ingest scheduling with only a 2s sleep + running/queued flag. During a build or git checkout (hundreds of events over minutes) the queued flag ping-pongs: each ingest finishes, sees queued=true, immediately starts another full project ingest \u2014 continuous back-to-back re-ingestion and CPU/ONNX burn. Events not filtered against ignore rules at all.",
+  "evidence": "state.running = false;\nif state.queued {\n    state.queued = false;\n    state.running = true;",
+  "suggestion": "Filter event paths through ignore logic (skip .git, gitignored paths), add minimum interval between watch ingests or proper debounce window.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Replay index mutations after commit even when cancelled",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "557-577",
+  "description": "check_cancelled sits between the committed DB write and replay_index_mutations. If cancel is requested during the write, ingest returns Err after the transaction committed: SQLite updated but vector journal not replayed, so turbovec index stays stale for the rest of the session (startup replay only heals on restart), and operation reported cancelled despite durable work.",
+  "evidence": "})?;\n\ncheck_cancelled(state, operation_id)?;\n...\nstate.replay_index_mutations(project_id)?;",
+  "suggestion": "Move cancellation check before the DB write only; always replay after successful commit (idempotent and cheap when journal empty).",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Report walk errors instead of silently skipping unreadable directories",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "218-222",
+  "description": "WalkBuilder results flattened with filter_map(|r| r.ok()), discarding per-entry errors (permission-denied subdirectories). User gets 'successful' ingest with silently partial index and empty errors list. A single chmod 000 directory makes an entire subtree invisible to memory with no signal. Same pattern in io.rs import_folder line 34.",
+  "evidence": ".build()\n.filter_map(|r| r.ok())\n.filter(|e| e.path().is_file())",
+  "suggestion": "Collect walk errors (throttled) into result.errors or a warning count.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Handle uppercase extensions in detect_language",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "834-880",
+  "description": "Extension match is case-sensitive: 'MAIN.RS', 'UTIL.PY', 'App.TS' are not indexed. On macOS/Windows (case-insensitive filesystems) uppercase extensions are common, and the code already special-cases \"r\"|\"R\" showing awareness, but no other extension. Those files silently drop out of memory.",
+  "evidence": "let ext = p.extension()?.to_str()?;\nSome(match ext {\n    \"rs\" => \"rust\",",
+  "suggestion": "Normalize with ext.to_ascii_lowercase() before matching (keep R/r distinction by checking original).",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Index full HTML files instead of first 200 lines only",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "1262-1273",
+  "description": "HTML has no chunk query (chunk_query_src returns None), so collect_chunks falls back to a single chunk of at most the first 200 lines. For any real HTML file the remaining markup/inline scripts are silently unindexed, and start/end lines misrepresent coverage. The lang_bundles test asserts chunk_query.is_some() for all languages EXCEPT html, cementing the gap.",
+  "evidence": "if chunks.is_empty() {\n    let cap = (lines.len() - 1).min(200);\n    chunks.push(Chunk { code: lines[..=cap].join(\"\\n\"), ... });",
+  "suggestion": "Add an html chunk query, or window large fallback files into multiple 200-line chunks.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Log query-compilation failures in LANG_BUNDLES",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "903-911",
+  "description": "chunk_query/import_query compilation failures collapsed via .ok() with no logging; a grammar/query version mismatch would silently degrade that language to whole-file fallback chunks with zero imports \u2014 diagnosable only in tests, not at runtime.",
+  "evidence": "let chunk_query = chunk_query_src(name).and_then(|src| Query::new(&language, src).ok());",
+  "suggestion": "Log tracing::warn! with the query error per language on failure.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Skip or resolve symlinked files explicitly in ingest walk",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "220-221",
+  "description": "follow_links(false) prevents directory recursion, but yielded symlink file entries pass e.path().is_file(), which FOLLOWS the link. A symlink inside the repo pointing outside it gets its target content read, hashed, and indexed under the in-repo path \u2014 content from outside the project root enters memory; same target reachable via two links indexed twice under different rels. Unvetted trust-boundary crossing for a local memory layer.",
+  "evidence": ".filter(|e| e.path().is_file())",
+  "suggestion": "Use symlink_metadata() to skip entries where file_type().is_symlink(), or dedupe by canonical path.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Guard collect_chunks slicing against zero-width EOF nodes",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "1236-1255",
+  "description": "end clamped to lines.len()-1 but start not validated. A zero-width node at EOF (error-recovery MISSING tokens sit at row == lines.len() when file ends with newline) would make start > lines.len()-1 and end < start, so lines[start..=end] panics; running inside rayon PARSE_POOL this aborts the entire ingest with panic instead of ingest error.",
+  "evidence": "let end = end_node.end_position().row.min(start + 200).min(lines.len() - 1);\nlet code = lines[start..=end].join(\"\\n\");",
+  "suggestion": "Clamp start to lines.len()-1 and skip capture if start > end.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Extract PHP use-statements: capture kind never matched in collect_imports",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "1310-1314,1384-1407",
+  "description": "PHP import query captures (namespace_use_declaration) @imp, but collect_imports only handles string/string_literal/interpreted_string_literal, import_declaration/import_header, identifier/dotted_name/scoped_identifier. 'namespace_use_declaration' matches none \u2014 every PHP capture silently dropped; PHP files always get zero imports and no import edges while the query pretends support.",
+  "evidence": "\"php\" => { r#\" (namespace_use_declaration) @imp \"# }",
+  "suggestion": "Add branch for namespace_use_declaration stripping leading 'use ' and trailing ';', or capture inner qualified names.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Preserve chunk stats: INSERT OR REPLACE resets created_at/access_count",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "789-830",
+  "description": "Re-indexing a changed file replaces chunk rows with hardcoded created_at=now, last_access=now, access_count=0, importance=0.5. Usage statistics accumulated by recall (which feed ranking/consolidation) wiped every time a file is touched; created_at no longer reflects when chunk first appeared.",
+  "evidence": "INSERT OR REPLACE INTO memories (uid, project_id, mem_type, content, importance, created_at, updated_at, last_access, access_count, ...)",
+  "suggestion": "Use INSERT ... ON CONFLICT(uid) DO UPDATE SET content=..., updated_at=... leaving created_at/access_count/last_access intact since UIDs deterministic.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Bump an indexer version into the file hash to invalidate stale chunkings",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "320-322",
+  "description": "Changed-file detection compares only file-content SHA-256. If chunker changes (grammar versions, query tweaks, MAX_CHUNK_TEXT changes), unchanged files keep old chunks forever \u2014 old segmentation, old UIDs, old imports \u2014 no way to refresh short of editing every file or deleting DB.",
+  "evidence": "let unchanged = existing_files.get(&pf.rel).is_some_and(|existing| existing.file_hash == pf.file_hash);",
+  "suggestion": "Hash file_hash together with an INDEXER_VERSION constant into the comparison key stored in indexed_files.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Fix chunk content truncation mismatch with advertised line span",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "127-134",
+  "description": "db_content() truncates to 4000 chars, but a 200-line chunk of dense code can exceed that; the row still advertises full start_line..end_line span. Recall/MCP returns code cut mid-expression while claiming to cover e.g. L120-320, and get_project_graph sizes nodes from full span. Silent content loss for exactly the large functions users most want.",
+  "evidence": "if text.len() > MAX_CHUNK_TEXT {\n    text = text.chars().take(MAX_CHUNK_TEXT).collect();\n}",
+  "suggestion": "Store full content, or clamp advertised end_line to truncation boundary so consumers know true extent.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Batch stale-chunk UID lookups instead of per-file queries",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "355-368",
+  "description": "stale_uids built with one code_uids_for_file query per changed/errored/deleted file \u2014 on a large refactor (thousands of changed files) that is thousands of sequential prepared-statement executions on the hot path before the write transaction.",
+  "evidence": "for rel in changed_rels.iter().chain(parse_error_rels.iter()) {\n    stale_uids.extend(db::code_uids_for_file(&conn, project_id, rel)?);\n}",
+  "suggestion": "Add db::code_uids_for_files using WHERE file_path IN (...) chunked batches, mirroring delete_memories_by_uids.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Align build_structure_summary filters with the ingest walk",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "1487-1497",
+  "description": "Structure summary omits add_custom_ignore_filename(\".biturboignore\") and uses hidden(true) while ingest walk uses hidden(false) and honors .biturboignore. Embedded project-structure summary lists ignored generated dirs inconsistently with what is actually indexed.",
+  "evidence": "WalkBuilder::new(root)\n    .max_depth(Some(3))\n    ...\n    .hidden(true)",
+  "suggestion": "Add .add_custom_ignore_filename(\".biturboignore\") and use same hidden setting as ingest walk (plus .git exclusion fix).",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Stream memory export instead of buffering entire JSON in RAM",
+  "file": "src-tauri/src/io.rs",
+  "lines": "138-149",
+  "description": "export_memories loads up to 1,000,000 memories via list() then serde_json::to_string_pretty over the whole set \u2014 two full copies of export in memory, easily GBs for large project. create_dir_all(parent).ok() swallows directory-creation errors, deferring to confusing write failure.",
+  "evidence": "let mems = crate::memory::list(state, project_id, None, 1_000_000, 0)?;\nlet json = serde_json::to_string_pretty(...)?;",
+  "suggestion": "Write with serde_json::Serializer over a File and stream memories in pages; propagate create_dir_all errors.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Remove dead code: _unused_hashset, unused file_name, _kind binding",
+  "file": "src-tauri/src/ingest.rs",
+  "lines": "1031,1256,1552-1555",
+  "description": "Leftover cruft: #[allow(dead_code)] fn _unused_hashset() existing only to silence unused-import warning (HashSet IS used elsewhere), 'let _ = file_name;' computed never used, '_kind' binding computed and discarded per chunk.",
+  "evidence": "#[allow(dead_code)]\nfn _unused_hashset() -> HashSet<()> { HashSet::new() }",
+  "suggestion": "Delete _unused_hashset and _kind binding; remove file_name computation or use it.",
+  "slice": "backend-ingest-io",
+  "sources": [
+   "ingest-io.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Fix TOCTOU in get_or_load_index that double-opens the same project index",
+  "file": "src-tauri/src/state.rs",
+  "lines": "143-179",
+  "description": "Cache miss check and insert are not atomic: two threads calling get_or_load_index for the same cold project both see no entry, both call ProjectIndex::open_or_create (which takes no file lock), and both insert. Result: two live ProjectIndex instances over the same .tvim/.uidmap.json with independent next_extid counters; each assigns colliding extids and whichever flushes last clobbers the other's entries. Trigger: two concurrent search/remember calls for a project not yet loaded (the MCP server serves concurrent tool calls). Data resurfaces only after digest-mismatch repair re-embeds everything.",
+  "evidence": "let indices = self.indices.read();\nif let Some(idx) = indices.get(project_id).cloned() { ... }\n// miss path, outside any lock:\nlet idx = Arc::new(ProjectIndex::open_or_create(...)?);\nlet mut indices = self.indices.write();\nindices.insert(project_id.to_string(), idx.clone());",
+  "suggestion": "Hold indices.write() across the load, or use entry-style double-checked insert under the write lock, or add an exclusive flock per .tvim inside open_or_create.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Stop evicting in-use indices whose dirty writes are then never flushed",
+  "file": "src-tauri/src/state.rs",
+  "lines": "200-227",
+  "description": "evict_if_over_budget/evict_stale_indices remove an Arc<ProjectIndex> from the map while callers still hold clones. The flusher thread and flush_all_indices only iterate map contents, and ProjectIndex has no Drop flush, so post-eviction adds live only in the detached instance and are lost on drop until digest-mismatch repair rebuilds. Worst case: a single project whose index exceeds the 512 MiB budget \u2014 get_or_load_index inserts it and then immediately calls evict_if_over_budget (line 178), evicting the just-loaded index, so every returned Arc is detached and nothing ever persists via the flusher.",
+  "evidence": "let mut indices = self.indices.write();\nindices.remove(&pid);\n...\nlet _ = self.evict_if_over_budget(); // end of get_or_load_index, after insert",
+  "suggestion": "Flush before eviction (idx.flush() on evict), skip pids still strongly referenced (Arc::strong_count check), and never evict the index inserted by the current call.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Make install_mcp_config atomic and stop wiping configs on JSON parse errors",
+  "file": "src-tauri/src/commands.rs",
+  "lines": "552-585",
+  "description": "For cursor/windsurf/claude targets, existing config parsed with unwrap_or_else(|_| json!({})): if ~/.claude.json (which holds substantial Claude Code state) fails to parse, the whole file is overwritten with just mcpServers.biturbo, destroying everything else. Writes use std::fs::write directly (no temp+rename), so a crash mid-write truncates the user's config.",
+  "evidence": "serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))\n...\nstd::fs::write(&config_path, output).map_err(|e| ...)",
+  "suggestion": "Fail loudly on parse errors instead of defaulting to {}, write temp+rename, keep a one-shot .bak of the original.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Fix TOML section removal prefix match that deletes neighboring codex sections",
+  "file": "src-tauri/src/commands.rs",
+  "lines": "634-644",
+  "description": "The skip-reset condition uses starts_with(\"[mcp_servers.biturbo\"), so a section like [mcp_servers.biturbo_extra] does NOT reset the skip flag; every line of that foreign section is then stripped from the user's ~/.codex/config.toml until the next unrelated header. Silent data loss in another tool's config.",
+  "evidence": "if trimmed.starts_with('[') && !trimmed.starts_with(\"[mcp_servers.biturbo\") {\n    skip = false;\n}",
+  "suggestion": "Reset skip on any line starting with '[' except exactly \"[mcp_servers.biturbo]\" (compare the exact header).",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Replace expect in refresh_indices that panics the app at startup",
+  "file": "src-tauri/src/state.rs",
+  "lines": "133-138",
+  "description": "refresh_indices runs during AppState::open and panics via .expect if ProjectIndex::open_or_create fails (permissions, disk full, corrupt dir). A single unwritable index file crashes the whole app instead of degrading to an error for that project.",
+  "evidence": "let idx = ProjectIndex::open_or_create(&pid, dim, bw as usize, &data_dir)\n    .expect(\"create project index\");",
+  "suggestion": "Log and skip the failing project (or propagate BiResult from AppState::open); never panic on I/O errors.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Move whole-project re-embedding out of the synchronous search path",
+  "file": "src-tauri/src/state.rs",
+  "lines": "301-372",
+  "description": "embed_and_search calls repair_index_if_needed before every search; on count/digest mismatch it synchronously embed-batches every active memory of the project and replace_alls the index inline. A stale index turns a millisecond query into a multi-second blocking call, and two concurrent searches that both detect staleness duplicate the entire rebuild. No per-project guard against concurrent repairs.",
+  "evidence": "pub fn embed_and_search(...) {\n    self.repair_index_if_needed(project_id)?;\n    ...\n}",
+  "suggestion": "Do incremental replay for small deltas, run full rebuilds on a background worker with a per-project in-flight guard, serve slightly-stale results meanwhile.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Guard operation status transitions so terminal rows cannot be overwritten",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "859-885",
+  "description": "update_status (complete/fail/mark_cancelled) and update_progress UPDATE with no status predicate, so anything can overwrite a terminal row: a late progress tick flips phase/current on a 'succeeded' op, and a racing fail() after complete() rewrites the outcome. mark_running enforces 'queued' but no other transition is enforced.",
+  "evidence": "\"UPDATE operations SET status = ?1, ... WHERE id = ?8\"",
+  "suggestion": "Add AND status IN ('queued','running') to update_status/update_progress; treat changed==0 as no-op for progress ticks.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Preserve watch_ingest kind when retrying a cancelled watch ingest",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "333-341",
+  "description": "retry maps both 'ingest' and 'watch_ingest' to start_ingest, which always creates a new operation with kind 'ingest'. A cancelled/failed watch_ingest retried from the UI silently becomes a one-shot ingest; watching semantics lost with no indication.",
+  "evidence": "match operation.kind.as_str() {\n    \"ingest\" | \"watch_ingest\" => { ... start_ingest(state, &project_id, &root) }",
+  "suggestion": "Route watch_ingest retries through the watch_ingest creation path or reject retry with a clear message.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Fail the operation when executor thread spawn fails instead of orphaning it queued",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "270-277",
+  "description": "All background starters (start_multi_ingest, start_consolidate, start_model_rebuild, spawn_ingest, and all four resume_pending arms) discard the spawn result with .ok(). If Builder::spawn fails, the operation stays 'queued' forever: no executor exists, request_cancel sets a flag nobody reads, UI polls a job that will never run.",
+  "evidence": "std::thread::Builder::new()\n    .name(format!(\"biturbo-operation-{id}\"))\n    .spawn(move || { ... })\n    .ok();",
+  "suggestion": "Match on the spawn Result and call fail(state, &id, ...) when it errs.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Restrict export_memories output path to user-selected locations",
+  "file": "src-tauri/src/commands.rs",
+  "lines": "336-352",
+  "description": "export_memories writes JSON to any renderer-supplied output_path with zero validation. Any XSS/renderer compromise turns this into arbitrary file overwrite of user-writable files (dotfiles, shell rc).",
+  "evidence": "crate::io::export_memories(state.inner(), args.project_id.as_deref(), std::path::Path::new(&args.output_path))",
+  "suggestion": "Require the path come from a dialog plugin pick, or restrict to an exports subdir under the data dir.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Close embedder_for_project cache race and stop mapping DB errors to NotFound",
+  "file": "src-tauri/src/state.rs",
+  "lines": "374-401",
+  "description": "Check-then-insert on project_embedders is racy: two threads can both miss and each build Embedder::new(model) (full ONNX session load), discarding one \u2014 memory/CPU spike under concurrency. Additionally the model lookup maps ANY query_row error to NotFound, so transient SQLite busy/locked errors are misreported as missing project.",
+  "evidence": "if let Some((cached_model, embedder)) = self.project_embedders.read().get(project_id) {...}\nlet embedder = Arc::new(Embedder::new(&model)?);",
+  "suggestion": "Build under the write lock (double-check after acquiring); distinguish QueryReturnedNoRows from other errors.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Give the index-flusher thread a shutdown flag and per-instance lifetime",
+  "file": "src-tauri/src/state.rs",
+  "lines": "90-110",
+  "description": "AppState::open spawns an infinite 'biturbo-index-flusher' loop with no exit condition, holding an AppState clone forever. Every AppState::open leaks another 5-second-tick thread \u2014 including every unit test that builds a state.",
+  "evidence": "std::thread::Builder::new()\n    .name(\"biturbo-index-flusher\".into())\n    .spawn(move || loop { std::thread::sleep(...); ... })",
+  "suggestion": "Gate the loop on an AtomicBool stopped on Drop, or share one flusher keyed by data_dir.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Avoid holding the indices read lock across flush disk I/O",
+  "file": "src-tauri/src/state.rs",
+  "lines": "280-285",
+  "description": "flush_all_indices holds indices.read() for the whole loop while maybe_flush writes temp files and renames. Large indexes block writers (get_or_load insert, eviction, model-rebuild map removal) for the duration of fsync-class I/O.",
+  "evidence": "pub fn flush_all_indices(&self) {\n    let indices = self.indices.read();\n    for idx in indices.values() { ... }",
+  "suggestion": "Clone the Arcs out under a short read guard, drop the lock, then flush each index.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Honor cancellation during long consolidations, not only before and after",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "558-585",
+  "description": "execute_consolidate checks is_cancel_requested only before starting and after consolidate returns; consolidate receives no operation id, so a minutes-long consolidation ignores cancel_requested entirely \u2014 UI cancel appears to do nothing until work finishes.",
+  "evidence": "if is_cancel_requested(state, id)? { ... }\nmatch crate::consolidate::consolidate(state, project_id) {",
+  "suggestion": "Thread the operation id into consolidate and poll is_cancel_requested between clusters/batches, aborting with mark_cancelled.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Report real elapsed time in multi-ingest done event instead of hardcoded 0",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "543-552",
+  "description": "The multi-ingest:done payload always emits elapsed_ms: 0 because the literal is hardcoded; consumers timing jobs get garbage.",
+  "evidence": "serde_json::json!({ \"job_id\": id, ..., \"elapsed_ms\": 0, ... })",
+  "suggestion": "Capture Instant::now() at start and emit started.elapsed().as_millis().",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Clean up per-operation lock files that accumulate forever",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "842-850",
+  "description": "Every operation creates operation-locks/{id}.lock on disk and nothing ever deletes these files. Unbounded clutter (one file per ingest/consolidate/retry ever run) in the app data dir.",
+  "evidence": "fn open_operation_lock(state: &AppState, id: &str) -> BiResult<std::fs::File> { ... }",
+  "suggestion": "Delete the lock file after releasing (terminal ops), or prune locks older than N days at startup.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Remove leftover shadow_dir when model rebuild activation fails",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "725-736",
+  "description": "On activate error the handler restores backups but never removes shadow_dir (rebuild-{id}), unlike success/cancel/mismatch paths. Each failed activation strands a fully built shadow index (potentially hundreds of MB) in indices/ forever.",
+  "evidence": "if let Err(error) = activate {\n    std::fs::remove_file(&actual).ok();\n    ... return Err(error);\n}   // no remove_dir_all(&shadow_dir) here",
+  "suggestion": "Call remove_dir_all(&shadow_dir) in the activate-error branch too; sweep stale rebuild-* dirs at startup.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Resume more than 500 queued operations and preserve malformed multi-ingest entries",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "398-456",
+  "description": "resume_pending scans only list(&state, 500): with >500 queued operations the remainder are never resumed after restart. The multi_ingest arm uses filter_map that silently drops checkpoint entries missing fields, resuming a partial project list without error.",
+  "evidence": "let pending = list(&state, 500)?;\n...\n.filter_map(|project| { Some((project.get(\"project_id\")?.as_str()?.to_string(), ...)) })",
+  "suggestion": "Page through all queued ops (WHERE status='queued'); fail or log loudly when checkpoint entries are malformed.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Distinguish genuine failures from cancellations in ingest error handling",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "817-830",
+  "description": "The Err branch decides recorded status solely via is_cancel_requested: if a real error occurs while the user also hit cancel, the operation is recorded 'cancelled' with no error text persisted, hiding the actual failure from list_operations/retry diagnostics.",
+  "evidence": "Err(error) => {\n    let cancelled = is_cancel_requested(state, id).unwrap_or(false);\n    if cancelled { mark_cancelled(state, id)?; } else { fail(state, id, &error.to_string())?; }",
+  "suggestion": "Only record 'cancelled' when the error is the cancellation sentinel; otherwise fail() with the real error.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Throttle update_progress DB writes and event emissions per batch",
+  "file": "src-tauri/src/operations.rs",
+  "lines": "100-133",
+  "description": "Every progress tick performs a full write transaction plus follow-up SELECT plus Tauri event emit. Ingest calls this per batch, so large projects generate thousands of transactions and events; each tick rewrites checkpoint via COALESCE even when unchanged. Write amplification slows ingests and floods the frontend event queue.",
+  "evidence": "state.db.write(|tx| { tx.execute(\"UPDATE operations SET ...\", ...) })?;\nif let (Some(app), Ok(operation)) = (&state.app, get(state, id)) { ... }",
+  "suggestion": "Emit progress at most every N ms or M% change; fold read-back into UPDATE ... RETURNING.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Stop fabricating scheduler queued=true in consolidate_now response",
+  "file": "src-tauri/src/commands.rs",
+  "lines": "254-262",
+  "description": "consolidate_now starts the operation via operations::start_consolidate (independent of the scheduler) then mutates scheduler::get_status() output to claim queued=true. Returned ConsolidateStatus lies about scheduler state; command returns no operation id so callers cannot correlate with operation_status.",
+  "evidence": "crate::operations::start_consolidate(...)?;\nlet mut status = crate::scheduler::get_status();\nstatus.queued = true;",
+  "suggestion": "Return the created Operation or derive ConsolidateStatus truthfully; never hand-mutate scheduler state.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Consolidate duplicate ingest_project and start_ingest IPC commands",
+  "file": "src-tauri/src/commands.rs",
+  "lines": "197-217",
+  "description": "Two commands do exactly the same thing (both call operations::start_ingest) differing only in return type. Dead-weight API surface invites drift: fixes applied to one path miss the other.",
+  "evidence": "pub fn ingest_project(...) -> BiResult<IngestJobResponse> { ... }\npub fn start_ingest(...) -> BiResult<Operation> { ... }",
+  "suggestion": "Keep one command returning Operation (job_id derivable) and migrate the frontend.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Validate root_path existence in set_watch like the ingest commands do",
+  "file": "src-tauri/src/commands.rs",
+  "lines": "356-380",
+  "description": "When enabling with explicit root_path, set_watch passes the path straight to enable_watch without the is_dir()/exists() check other commands perform. A typo'd or deleted directory spawns a watcher over nothing and silently overrides the project's stored root_path.",
+  "evidence": "let root = if let Some(r) = args.root_path.as_ref() { std::path::PathBuf::from(r) } else { ... };\ncrate::io::enable_watch(state.inner(), &args.project_id, &root)?;",
+  "suggestion": "Reject nonexistent/non-directory roots with BiError::Invalid before enabling.",
+  "slice": "backend-core",
+  "sources": [
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "explain() panics on empty typed candidate set via turbovec empty-allowlist assert",
+  "file": "src-tauri/src/recall.rs",
+  "lines": "56-67",
+  "description": "explain() builds an allowlist of uids for the requested mem_type and passes it to embed_and_search without the empty-check that memory::search has (memory.rs:306-308). When the type has zero active memories in the project, allowlist = Some([]) reaches ProjectIndex::search -> turbovec IdMapIndex::search_with_allowlist, which does assert!(!ids.is_empty(), \"allowlist is empty\") (turbovec-0.8.0/src/id_map.rs:209). Trigger: MCP/UI recall_explain with a mem_type that has no rows -> panic in the command thread instead of an empty result.",
+  "evidence": "let allowlist: Option<Vec<String>> = if let Some(mem_type) = mem_type { ... Some(rows.filter_map(Result::ok).collect()) } ... state.embed_and_search(project_id, query, candidate_k, allowlist.as_deref())?;",
+  "suggestion": "Add the same guard as memory::search: if allowlist.as_ref().is_some_and(Vec::is_empty) return an empty RecallResponse before calling embed_and_search.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Filter padded sentinel search hits (score -inf, ext_id 0) out before score fusion",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "228-236",
+  "description": "turbovec's search pads every result row to exactly k entries with (score = f32::NEG_INFINITY, id = 0) (turbovec-0.8.0/src/search.rs). External ids are slots starting at 0, so id 0 maps to a real uid, and index_engine's filter_map converts each pad entry into a SearchHit{uid_of_first_vector, score: -inf}. fuse_rankings clamps -inf to similarity 0.0 and ACCUMULATES a rank score per entry, so with kk=30 and only e.g. 3 candidates, the first-inserted memory gets ~27 extra contributions (~+0.22) versus ~0.016 for a genuine top hit \u2014 it dominates every typed/small-project search and its rank shows up as #1 in recall explanations.",
+  "evidence": "let allowlist_extids ... .filter_map(|(id, score)| { inner.extid_to_uid.get(&id).map(|uid| SearchHit { uid: uid.clone(), score, ext_id: id }) })  // pad entries pass straight through",
+  "suggestion": "In ProjectIndex::search, drop entries whose score == f32::NEG_INFINITY before mapping to SearchHit.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Stop re-applying full age-decay to already-decayed importance on every consolidate run",
+  "file": "src-tauri/src/consolidate.rs",
+  "lines": "98-106",
+  "description": "apply_decay computes new_imp = stored_importance * exp(-age_since_created_at/half_life) + boost. The decay factor is the TOTAL decay since creation, but it is multiplied into the already-decayed stored value, so the operation is not idempotent: after n runs importance ~= imp0*d^n + b*(d^(n-1)+...+1). The scheduler runs consolidate automatically every 6 hours plus at startup and on demand, so a 60-day-old memory (d~0.37) is driven to the 0.05 floor after ~3 runs regardless of original importance, while any memory accessed in the last 30 days inflates toward the 1.0 clamp. Decay destroys good memories and access stats get amplified into certainty.",
+  "evidence": "let decay = (-age_ms / half_life_ms as f64).exp();\nlet new_imp = (importance * decay + boost).clamp(0.05, 1.0) as f32;",
+  "suggestion": "Store the original/base importance and compute decayed value from created_at each run, or apply incremental decay over elapsed time since last application.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Exclude superseded memories from dedup so merge cannot delete the active copy",
+  "file": "src-tauri/src/consolidate.rs",
+  "lines": "150-176",
+  "description": "find_duplicates pages memories with memory::list, which has no `superseded_by IS NULL` filter (verified: memory.rs:511-528). A superseded zombie A and its active successor B are near-identical by design, so they routinely exceed the 0.95 cosine threshold. keep/drop chosen purely by importance: if A.importance >= B.importance, merge_pair keeps A, marks B superseded_by=A.id and hard-deletes B. Result: the active memory is deleted and survivor A still carries its stale superseded_by pointer so it is excluded from all searches \u2014 both memories effectively disappear.",
+  "evidence": "let mems: Vec<Memory> = memory::list(state, Some(&pid), None, BATCH, offset)?;  // includes superseded rows\nlet (keep, drop_) = if a.importance >= b.importance { (a.uid.clone(), b.uid.clone()) } else { ... };",
+  "suggestion": "Filter superseded_by IS NULL in find_duplicates (and re-verify inside merge_pair inside one transaction) so only active memories can be merged.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Clear supersession pointers in forget() so the predecessor is not hidden forever",
+  "file": "src-tauri/src/memory.rs",
+  "lines": "198-217",
+  "description": "remember(supersedes=A) sets A.superseded_by = new_id. forget(new) only does DELETE FROM memories WHERE uid = ?1 and never clears pointers, leaving A.superseded_by dangling. A stays in the DB (counted by list/count_by_type) but is permanently excluded from every search and vector index because of the superseded_by IS NULL filters. Trigger: remember B superseding A, then forget B \u2014 A silently vanishes from recall forever.",
+  "evidence": "tx.execute(\"DELETE FROM memories WHERE uid = ?1\", rusqlite::params![uid])?;  // no UPDATE memories SET superseded_by = NULL",
+  "suggestion": "In forget(), after resolving the row id, run UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?old_id in the same transaction.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Prune recall_events/recall_feedback or they grow unboundedly",
+  "file": "src-tauri/src/recall.rs",
+  "lines": "113-134",
+  "description": "Every explain() inserts a recall_events row containing result_uids plus a full serialized explanations JSON, and there is no DELETE/retention anywhere in the codebase. The MCP server instructions tell agents to call recall_for_context on every user message, so this table grows by one large JSON row per message forever, bloating the SQLite file with data nothing reads except submit_feedback's single lookup.\n\n**Merged finding:** Scope widened: applied index_mutations rows (with full content), activity rows (written on every search/read/write), recall_events and recall_feedback ALL lack retention. operations table and per-operation lock files also grow forever. One retention pass in the scheduler tick should cover all.",
+  "evidence": "tx.execute(\"INSERT INTO recall_events(id, project_id, query_hash, result_uids, explanations, created_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)\", ...)?;  // no pruning path exists",
+  "suggestion": "Add a retention policy (delete events older than N days or keep last M per project); consider storing explanations without full per-hit structs.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json",
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Use one tokenizer for reranking so explanations match actual ranking",
+  "file": "src-tauri/src/memory.rs",
+  "lines": "587-595",
+  "description": "search() reranks with tokenize_query (lowercase only, punctuation kept, len>=2), while explain() computes matched_terms and applied_boosts with normalized_terms (recall.rs:301-311), which strips edge punctuation/underscores. For query 'rust!' the search path boosts nothing but the explanation reports a content match for 'rust' and a multiplier that was never applied \u2014 the explainability feature misreports the actual scoring.",
+  "evidence": "fn tokenize_query(query: &str) -> Vec<String> {\n    query.split_whitespace().map(|t| t.to_lowercase()).filter(|t| t.len() >= 2).collect()\n}",
+  "suggestion": "Delete tokenize_query and use recall::normalized_terms (or shared helper) in memory::search so both paths score identically.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Require word-boundary tag matches instead of bidirectional substrings",
+  "file": "src-tauri/src/recall.rs",
+  "lines": "178-185",
+  "description": "Tag matching accepts tag.contains(term) || term.contains(&tag) with no length floor, so a query term 'rust' matches tag 'us', 'logging' matches tag 'go', and any 1-2 char tag matches most queries. Each false match multiplies the fused score by 1.20 and is reported as a tag match in explanations, systematically distorting ranking toward memories with short/generic tags.",
+  "evidence": "memory.tags.iter().any(|tag| {\n    let tag = tag.to_lowercase();\n    tag.contains(term.as_str()) || term.contains(&tag)\n})",
+  "suggestion": "Match tags on equality or word-boundary containment; ignore tags shorter than ~3 chars for substring matching.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Recalibrate importance/feedback boosts against the fused-score scale",
+  "file": "src-tauri/src/recall.rs",
+  "lines": "224-230",
+  "description": "Fused RRF scores are bounded by roughly 2/61 (~0.033) for a #1 vector+#1 FTS hit, but apply_ranking_boost adds importance*0.05 (up to +0.05 flat) and search adds feedback boosts up to +/-0.02. These additive terms exceed the entire achievable relevance signal, so after reranking, ordering is dominated by the importance field and one feedback click rather than by query relevance; a max-importance memory with zero term matches outranks a perfect relevance match.",
+  "evidence": "base_score * boosts.multiplier + boosts.importance_boost  // importance_boost up to 0.05 vs base_score <= ~0.033",
+  "suggestion": "Scale additive boosts relative to the RRF score range or normalize scores before the rerank stage.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Reject unresolvable supersedes references instead of silently inserting a non-superseding memory",
+  "file": "src-tauri/src/memory.rs",
+  "lines": "120-130",
+  "description": "When input.supersedes is set but the SELECT finds no row (unknown uid, other project, or already superseded), superseded is None and the insert proceeds with supersedes=NULL \u2014 no error returned. The caller believes the old memory was replaced, but both memories remain active and searchable, duplicating possibly contradictory facts.",
+  "evidence": "let superseded: Option<(i64, String)> = match input.supersedes.as_deref() {\n    Some(old_uid) => tx.query_row(...).optional()?,\n    None => None,\n};",
+  "suggestion": "If input.supersedes.is_some() and lookup returns None, return BiError::Invalid naming the uid.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Guard auto-dedup against near-duplicate-but-distinct memories (configurable threshold + content diff)",
+  "file": "src-tauri/src/consolidate.rs",
+  "lines": "164-176",
+  "description": "The hardcoded 0.95 cosine threshold merges memories that differ by a single token: BGE-small embeddings for 'deploy to staging every Friday' vs 'deploy to production every Friday' score well above 0.95, yet the facts differ. merge_pair unions only tags and permanently hard-deletes the other memory's content, and consolidate runs automatically every 6 hours, so one bad embedding pair silently destroys data with no way to configure or review.",
+  "evidence": "if h.score < 0.95 || h.uid == a.uid { continue; }\n...\nmemory::forget(state, drop_uid)?;  // content gone for good",
+  "suggestion": "Make threshold configurable, require minimal token-level content diff check before merging, consider soft-retiring instead of hard forget during automated runs.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Remove dead supersede UPDATE in merge_pair (row is deleted immediately after)",
+  "file": "src-tauri/src/consolidate.rs",
+  "lines": "205-218",
+  "description": "merge_pair writes UPDATE memories SET superseded_by = ... WHERE uid = drop_uid then immediately calls memory::forget(drop_uid) which hard-DELETEs the row. The UPDATE is always discarded \u2014 wasted work and misleading code suggesting soft-supersede semantics that do not exist. The 'merge' also drops the dropped memory's access_count/importance entirely rather than folding them into the survivor.",
+  "evidence": "tx.execute(\"UPDATE memories SET superseded_by = (SELECT id FROM memories WHERE uid = ?1), ...\", ...)?;\nmemory::forget(state, drop_uid)?;",
+  "suggestion": "Drop the UPDATE (or make forget soft) and fold access_count/max(importance) from dropped memory into keeper inside same transaction.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Replace unwrap in embed_batch with an error on embedding-count mismatch",
+  "file": "src-tauri/src/embed.rs",
+  "lines": "96-104",
+  "description": "embed_batch zips missing inputs with computed results then does cached.into_iter().map(|o| o.unwrap()). If fastembed ever returns fewer vectors than input texts, the Option unwrap panics the thread instead of returning BiError. Invariant upheld only by trust in the dependency.",
+  "evidence": "Ok(cached.into_iter().map(|o| o.unwrap()).collect())",
+  "suggestion": "Check computed.len() == missing.len() and return BiError::Embed on mismatch instead of unwrapping.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Re-check model under EMBED_LOCK to avoid spurious 'model released mid-embed' failures",
+  "file": "src-tauri/src/embed.rs",
+  "lines": "123-128",
+  "description": "ensure_model() runs BEFORE the EMBED_LOCK is taken. The scheduler calls release_idle_embedders() every 120s and release_if_idle nulls self.model under EMBED_LOCK; a thread that passed ensure_model's read check can then acquire EMBED_LOCK, observe model == None and fail the whole embed/search with BiError::Embed(\"model released mid-embed\") instead of lazily reloading. Users see sporadic semantic-search failures right after idle periods.",
+  "evidence": "self.ensure_model()?;\nlet _guard = EMBED_LOCK.lock();\nlet model = guard.as_ref().ok_or_else(|| BiError::Embed(\"model released mid-embed\".into()))?;",
+  "suggestion": "After acquiring EMBED_LOCK, if model is None call ensure_model() again rather than erroring.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Scope the embedding mutex per Embedder instead of one global EMBED_LOCK",
+  "file": "src-tauri/src/embed.rs",
+  "lines": "17-124",
+  "description": "embed_batch_uncached_stream, release_if_idle and force_release all take the process-wide static EMBED_LOCK, serializing ONNX inference across ALL projects and Embedder instances. This contradicts the struct comment ('RwLock (not Mutex)... concurrent embeds only need a read lock'): concurrent searches/ingests for different projects cannot overlap even though each TextEmbedding session is thread-safe.",
+  "evidence": "static EMBED_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));",
+  "suggestion": "Move the lock into Embedder so independent embedders can run concurrently; keep a global cap only if ONNX thread pools oversubscribe CPU.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Drop the dead AND fallback and stop swallowing FTS errors in fts_search",
+  "file": "src-tauri/src/memory.rs",
+  "lines": "413-433",
+  "description": "fts_search tries OR-combined query and falls back to AND-combined when OR returns no hits. An AND query is semantically a subset of OR, so if OR matched nothing AND cannot either \u2014 the fallback's only live path is when the OR query ERRORED, and that error is silently discarded by `if let Ok(hits)`, masking real FTS problems instead of logging them.",
+  "evidence": "if !or_query.is_empty() {\n    if let Ok(hits) = run_fts_query(conn, &or_query, ...) {\n        if !hits.is_empty() { return Ok(hits); }\n    }\n}",
+  "suggestion": "Remove the AND pass (or invert: try AND first for precision), and log-or-propagate the OR query error.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Exclude superseded memories from count_by_type stats",
+  "file": "src-tauri/src/memory.rs",
+  "lines": "540-558",
+  "description": "count_by_type has no superseded_by IS NULL predicate, so stats include zombie rows that search, the vector index and repair_index_if_needed all exclude. After heavy supersede usage the reported per-type counts drift upward from what is actually retrievable.",
+  "evidence": "\"SELECT mem_type, COUNT(*) FROM memories WHERE project_id = ?1 GROUP BY mem_type\"",
+  "suggestion": "Add AND superseded_by IS NULL to both variants (or expose active vs total explicitly).",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Compute decay deltas inside the write transaction to avoid lost updates",
+  "file": "src-tauri/src/consolidate.rs",
+  "lines": "49-121",
+  "description": "apply_decay reads all importances via a pooled connection, computes new values outside any transaction, then writes them in a second step. A concurrent memory::update() that sets importance between read and write is silently overwritten by the stale computed value (read-modify-write race).",
+  "evidence": "let rows: Vec<(String, f64, i64, i64, i64)> = ... // snapshot outside txn\nstate.db.write(|tx| { ... })?;",
+  "suggestion": "Do SELECT and UPDATEs inside one write transaction, or use UPDATE ... SET importance = importance*?delta SQL so arithmetic happens atomically.",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Validate non-empty content in update() like remember() does",
+  "file": "src-tauri/src/memory.rs",
+  "lines": "219-232",
+  "description": "remember() rejects whitespace-only content but update() stores input.content verbatim, so update(uid, content: Some(\" \")) produces a whitespace-only memory that still occupies the vector index and FTS row, degrading search results and contradicting the write-path invariant.",
+  "evidence": "let new_content = input.content.clone().unwrap_or_else(|| existing.content.clone());  // no trim/is_empty validation",
+  "suggestion": "Apply the same trim().is_empty() rejection (or treat empty as 'keep existing') in update().",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Use embed_batch_uncached for bulk dedup embedding to avoid thrashing the query cache",
+  "file": "src-tauri/src/consolidate.rs",
+  "lines": "156-159",
+  "description": "find_duplicates embeds the whole non-code corpus with embed_batch, which inserts every corpus text into the shared 256-entry LRU query cache. embed_batch_uncached was added specifically to skip the LRU cache to avoid pollution, yet this bulk path pollutes it anyway, evicting real query embeddings right after every consolidate run.",
+  "evidence": "let embeddings = state.embedder_for_project(&pid)?.embed_batch(&texts)?;  // cached variant for bulk corpus pass",
+  "suggestion": "Call embed_batch_uncached here (same for rebuild loop in state.rs repair_index_if_needed).",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Cache uid_digest between mutations instead of re-sorting/hashing all uids on every search",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "277-281",
+  "description": "embed_and_search calls repair_index_if_needed on every query, and repair compares idx.uid_digest() against index_state. uid_digest collects every uid, sort_unstable()s and hashes them \u2014 O(n log n) string work per search. With large indexes (100k+ code chunks) this adds measurable per-query latency for a value that only changes when the index changes.",
+  "evidence": "pub fn uid_digest(&self) -> String {\n    let inner = self.inner.lock();\n    let mut uids: Vec<&str> = inner.uid_to_extid.keys().map(String::as_str).collect();\n    uids.sort_unstable();",
+  "suggestion": "Maintain digest incrementally (recompute after add_batch/remove/replace_all, memoize behind dirty flag).",
+  "slice": "backend-memory",
+  "sources": [
+   "memory-recall.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Corrupt/missing uidmap silently resets id map while stale vectors stay loaded",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "48-61",
+  "description": "open_or_create parses {project_id}.uidmap.json with serde_json::from_slice(&bytes).unwrap_or_default(); any parse error yields an EMPTY map and next_extid=1 while the loaded .tvim still contains all old vectors under extids 1..N. Same empty-map state whenever meta file missing but tvim exists (e.g. crash between the two renames in persist_now). First subsequent add()/add_batch() assigns extid 1.. into an index that already contains those ids, so uid->vector attribution silently diverges: searches return uids whose stored vector belongs to another memory. len() also reports 0 for a non-empty index, defeating count-based repair checks.",
+  "evidence": "let map: HashMap<String, u64> = serde_json::from_slice(&bytes).unwrap_or_default();",
+  "suggestion": "Treat unreadable/inconsistent meta as fatal or trigger full rebuild from SQLite; never fall back to empty map over non-empty index.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Index persist uses two renames without fsync; crash leaves tvim/uidmap mismatched",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "180-203",
+  "description": "persist_now writes tmp files, renames tmp_index then tmp_meta, never fsyncs either file or directory. Failure modes: (1) crash between the two renames leaves NEW .tvim paired with OLD .uidmap.json \u2014 on reload next_extid collides with extids already present; (2) without fsync-before-rename, APFS/ext4 may persist rename without file data, producing zero-length or garbage targets despite the 'crash mid-write never corrupts' comment.",
+  "evidence": "drop(inner);\nstd::fs::rename(&tmp_index, &self.file_path)?;\nstd::fs::rename(&tmp_meta, &meta)?;\nself.dirty.store(false, Ordering::Release);",
+  "suggestion": "Fsync both tmp files before renaming and fsync parent directory after; store generation counter in both files so mismatched pair detected on load and repaired.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "assert_eq! panics on dimension mismatch instead of returning an error",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "89,109,211,249",
+  "description": "add(), add_batch(), search(), search_filtered() all assert_eq!(vector.len(), self.dim). self.dim comes from projects.dim while vectors come from embedder_for_project honoring per-project embed_model. During/after a model switch to different-dimension model, or when cached ProjectIndex predates a dim change, embed returns different length and the assert panics the calling thread \u2014 killing the MCP stdio server loop or a Tauri command \u2014 instead of returning BiError. Note: release profile sets panic=abort, so this kills the entire process.",
+  "evidence": "pub fn add(&self, uid: &str, vector: &[f32]) -> BiResult<()> {\n    assert_eq!(vector.len(), self.dim, \"vector dim mismatch\");",
+  "suggestion": "Replace asserts with BiError::Index returns (validate once in open_or_create against loaded IdMapIndex dims); surface a 'rebuild required' error.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Dirty flag cleared after snapshot write can lose a concurrent mutation from disk",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "195-201",
+  "description": "persist_now serializes under inner lock, drops it, renames, stores dirty=false. A concurrent add()/add_batch() can commit and mark_dirty() in the window between serialization and dirty.store(false); the store erases the new mutation's dirty bit. Just-added vector never persisted; if process exits before any later mutation, SQLite has the memory but index file does not, requiring expensive re-embedding via repair.",
+  "evidence": "self.dirty.store(false, Ordering::Release);",
+  "suggestion": "Capture mutation generation counter under inner lock during serialization; only clear dirty if counter unchanged.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "add_batch commits uid maps before the fallible add_with_ids; errors leave phantom mappings",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "118-138",
+  "description": "In add_batch, uid_to_extid/extid_to_uid are inserted and removed-entries dropped BEFORE inner.index.add_with_ids(...) runs. If add_with_ids fails the function returns Err but maps already claim every uid exists \u2014 including uids whose previous vectors were removed and never re-added. Subsequent searches filter through extid_to_uid and contains_uid()/len() report entries the vector index does not have. add_one() correctly inserts maps only after add_with_ids succeeds; batch path diverges.",
+  "evidence": "inner.uid_to_extid.insert(uid.clone(), extid);\ninner.extid_to_uid.insert(extid, uid.clone());\n...\ninner.index.add_with_ids(&flat, &ids).map_err(...)?;",
+  "suggestion": "Stage map deltas in locals and apply to inner only after add_with_ids succeeds, mirroring add_one's ordering.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Coalesced manual consolidate requests are dropped; queued flag never becomes a job",
+  "file": "src-tauri/src/scheduler.rs",
+  "lines": "102-107,120-124",
+  "description": "When enqueue() finds g.running it sets g.queued=true and returns WITHOUT sending on the channel; the Full branch of try_send does the same. Nothing ever reads g.queued to synthesize a follow-up job: worker only clears the flag when it dequeues its next channel message, and run_once ignores it. A user clicking 'consolidate now' while a run is in flight loses the request entirely, and get_status() reports queued=true / next_run_in_secs=0 indefinitely. io.rs implements the correct re-run pattern; scheduler.rs does not.",
+  "evidence": "if g.running {\n    // Coalesce: one manual job is enough while another runs. Mark queued.\n    g.queued = true;\n    return Ok(());\n}",
+  "suggestion": "Always try_send (capacity 8 buffers fine), or have worker after each run_once re-check g.queued and enqueue a ManualJob before blocking on recv().",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Migration connection lacks busy_timeout and ignores cross-process write lock",
+  "file": "src-tauri/src/db.rs",
+  "lines": "60-79",
+  "description": "prepare_database serializes migrations across processes via biturbo.migrate.lock, but the raw rusqlite::Connection::open used for migration has no busy_timeout (SQLite default 0) and does not take the biturbo.write.lock that Db::write users hold. If GUI migrates while MCP sidecar is mid-write, migration transaction gets immediate SQLITE_BUSY, run_migrations fails, startup aborts after pointless backup+restore cycle.",
+  "evidence": "let mut conn = rusqlite::Connection::open(db_path)?;\nlet version: i64 = conn.query_row(\"PRAGMA user_version\", [], |r| r.get(0))?;",
+  "suggestion": "Execute PRAGMA busy_timeout=5000 on migration connection and acquire same write.lock for migration duration.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Blocking consolidate runs directly on the tokio async runtime threads",
+  "file": "src-tauri/src/scheduler.rs",
+  "lines": "51-57,80-88,197",
+  "description": "run_once is an async fn that calls consolidate::consolidate(state, project_id) synchronously; consolidate does heavy CPU + synchronous SQLite/embedding work that can run minutes. Both periodic loop task and manual worker task park a tauri async_runtime worker thread for the whole run, starving other tasks (UI events, other commands).",
+  "evidence": "let result = consolidate::consolidate(state, project_id);",
+  "suggestion": "Wrap the synchronous consolidate call in tokio::task::spawn_blocking or dedicated thread + handle.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "run_now_blocking bypasses the running gate and can race the consolidate worker",
+  "file": "src-tauri/src/scheduler.rs",
+  "lines": "135-157",
+  "description": "run_now_blocking calls consolidate::consolidate directly without checking or setting Shared::running, so any caller can start a second concurrent consolidate while periodic loop or manual worker is mid-run \u2014 exactly what the module comment says must never happen. Also sets g.running=false on completion, clobbering the flag if another run is active.",
+  "evidence": "pub fn run_now_blocking(state: &AppState) -> BiResult<ConsolidateReport> {\n    let report = consolidate::consolidate(state, None)?;",
+  "suggestion": "Route through same gate (check-and-set g.running, return Busy if held) or delete the compatibility alias.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "get_status reports a full 6h interval before the first startup run",
+  "file": "src-tauri/src/scheduler.rs",
+  "lines": "159-178",
+  "description": "Before any run completes, get_status returns next_run_in_secs = INTERVAL (21600), but periodic loop actually fires at STARTUP_DELAY (60s) after spawn. Status misreports next consolidation by ~5h58m during first minute after every fresh start.",
+  "evidence": "} else {\n    INTERVAL.as_secs()\n};",
+  "suggestion": "Track loop's next-due Instant (or subtract STARTUP_DELAY when last_finish is None).",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "content_hash persisted in journal but never verified during replay",
+  "file": "src-tauri/src/persistence.rs",
+  "lines": "42-54",
+  "description": "queue() computes SHA-256 of content into index_mutations.content_hash, but replay_index_mutations never reads it. Dead weight today and missed integrity check: comparing hash(content) at replay would detect journal/index drift cheaply before spending embedding compute, and let replay skip upserts whose content already matches.",
+  "evidence": "let content_hash = content.map(hash_text);",
+  "suggestion": "Verify content_hash against content in replay (error or force repair on mismatch).",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "persist_now holds the index mutex across full multi-MB serialize and file write",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "180-197",
+  "description": "The whole flush \u2014 turbovec write() plus serde_json serialization of entire uid map \u2014 executes while holding inner's Mutex, so every search/add/remove on that project blocks on disk IO latency. For large indices this turns background flush ticks into visible recall-latency spikes; flusher runs maybe_flush every 5s.",
+  "evidence": "let inner = self.inner.lock();\n...\ninner.index.write(&tmp_index)...",
+  "suggestion": "Serialize to in-memory buffers while holding lock (or snapshot uid map clone), release lock, then file IO lock-free; clear dirty conditionally by generation.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Newer user_version (downgraded binary) silently accepted by prepare_database",
+  "file": "src-tauri/src/db.rs",
+  "lines": "76-79",
+  "description": "Guard is `if version >= CURRENT_SCHEMA_VERSION { return Ok(()) }`, so opening a database written by a NEWER biTurbo proceeds against unknown schema. Missing columns/tables then produce confusing runtime SQL errors instead of clear 'database created by newer version' message; migrations skipped entirely.",
+  "evidence": "if version >= CURRENT_SCHEMA_VERSION {\n    fs2::FileExt::unlock(&lock)?;\n    return Ok(());\n}",
+  "suggestion": "Reject (or explicitly warn and refuse) when version > CURRENT_SCHEMA_VERSION.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Pre-migration database and index-metadata backups accumulate forever",
+  "file": "src-tauri/src/db.rs",
+  "lines": "82-95",
+  "description": "Every migration run copies full DB (conn.backup) plus all indices/*.json metadata into backups/, nothing ever deletes old backups. Copy happens whenever user_version < CURRENT_SCHEMA_VERSION (including repeated failed attempts which restore and retry on next launch), so a flapping migration loop creates unbounded series of full database copies.",
+  "evidence": "let path = backup_dir.join(format!(\"biturbo-pre-v{}-{}.db\", CURRENT_SCHEMA_VERSION, stamp));\nconn.backup(DatabaseName::Main, &path, None)?;",
+  "suggestion": "Retain only last N pre-migration backups (delete older after successful migration commit).",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "replace_all publishes an empty index before repopulating and persists partial state on error",
+  "file": "src-tauri/src/index_engine.rs",
+  "lines": "291-305",
+  "description": "replace_all resets Inner to fresh empty index under lock, releases, re-acquires in add_batch. Between the two acquisitions concurrent searches observe empty index (recall returns nothing mid-rebuild); if add_batch fails partway the index left partially populated with old contents gone; mark_dirty already set so debounced flusher persists partial state to disk. Recovery depends on repair being triggered later by digest mismatch.",
+  "evidence": "*inner = Inner { index: IdMapIndex::new(self.dim, self.bit_width)..., next_extid: 1 };\n}\nself.mark_dirty();\nself.add_batch(items)?;",
+  "suggestion": "Build replacement Inner completely off to the side, then swap in under single lock; on error keep previous Inner intact.",
+  "slice": "backend-storage",
+  "sources": [
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Sanitize project id to block path traversal in index file paths",
+  "file": "src-tauri/src/project.rs",
+  "lines": "59-60,160-172",
+  "description": "create_project accepts an arbitrary caller-supplied id (the MCP create_project tool passes args.id straight through) and never validates it. project::delete builds filesystem paths with format!(\"{id}...\") joined onto data_dir/indices, so an id like '../../Users/victim/file' escapes the directory: delete creates '{id}.mutation.lock' at an arbitrary path (OpenOptions create+write) and removes '{id}.tvim'/'{id}.uidmap.json' wherever such files exist. The MCP server is driven by LLM agents, so a prompt-injected agent gains an arbitrary file-create/delete primitive outside the data dir.\n\n**Merged finding:** Also flagged from the persistence.rs angle: the same unsanitized id reaches {project_id}.mutation.lock paths in replay_index_mutations (persistence.rs:71-74).",
+  "evidence": "let id = input.id.unwrap_or_else(|| slugify(&input.name));  // no validation\n...\n.join(format!(\"{id}.mutation.lock\")),",
+  "suggestion": "Validate ids against ^[a-zA-Z0-9_-]{1,64}$ in project::create (and defensively in delete/get), or key filenames off the numeric rowid.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json",
+   "db-index-sched.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Stop sending JSON-RPC responses to notification messages",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "60-98",
+  "description": "dispatch() answers every inbound message including notifications (messages without id). 'notifications/initialized' returns json!({}) \u2014 not even a valid JSON-RPC object \u2014 and every other notification falls into the catch-all arm emitting a -32601 error response with id null. JSON-RPC 2.0 forbids replying to notifications; strict clients can error or mis-correlate replies.",
+  "evidence": "\"notifications/initialized\" => json!({}),\n_ => json!({ \"jsonrpc\": \"2.0\", \"id\": id, \"error\": { \"code\": -32601, ... } })",
+  "suggestion": "When req.id.is_none(), do not write any response: handle known notifications explicitly and drop unknown ones silently.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Run blocking tools off the sequential dispatch loop",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "20-45",
+  "description": "The stdio loop awaits dispatch() inline, so requests are strictly serialized. Heavy synchronous tools (ingest_project, consolidate, import_folder, export_memories) execute directly on the async task. While one large ingest runs, the server cannot answer ping, operation_status, or cancel_operation: wire-level cancellation of long operations is impossible and client timeouts fire.",
+  "evidence": "let response = match serde_json::from_str::<JsonRpcRequest>(trimmed) {\n    Ok(req) => dispatch(&state, req).await,",
+  "suggestion": "Spawn each request as a tokio task (JSON-RPC allows out-of-order responses) or run blocking tools via tokio::task::spawn_blocking; serialize stdout writes behind a mutex.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Disable the file watcher when deleting a project",
+  "file": "src-tauri/src/project.rs",
+  "lines": "148-186",
+  "description": "project::delete removes memories, the project row, and index files, but never calls io::disable_watch and never removes the WATCHERS registry entry. A deleted-but-watched project keeps its notify watcher alive: every filesystem event re-triggers a watch ingest that fails at project::get, spamming errors; if a new project is later created with the same id, the stale watcher silently ingests the OLD root_path into the NEW project.",
+  "evidence": "// delete body only: flush_all_indices / indices.write().remove / remove_file / db.write(DELETE...)\n// io.rs:205: WATCHERS.write().remove(project_id);  <- only inside disable_watch",
+  "suggestion": "Call crate::io::disable_watch(state, id) inside project::delete before dropping the rows.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Add a single-instance guard for the desktop app",
+  "file": "src-tauri/src/lib.rs",
+  "lines": "86-110",
+  "description": "run() registers no single-instance plugin (tauri-plugin-single-instance absent from Cargo.toml). Launching biTurbo twice yields two full AppState processes over the same SQLite DB and indices dir: duplicate tray icons, two consolidate schedulers, two debounced index flushers rewriting the same .tvim files where last-writer-wins loses vectors.",
+  "evidence": ".plugin(tauri_plugin_autostart::Builder::new().build())\n.plugin(tauri_plugin_shell::init())\n... // no single-instance plugin",
+  "suggestion": "Add tauri-plugin-single-instance as the first plugin, focusing the existing window on second launch.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Clamp the list tool limit to prevent unbounded queries",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "165-168",
+  "description": "The list handler passes limit raw into memory::list which interpolates it as i64 into SQL LIMIT with no clamp. limit=9223372036854775808 wraps to i64::MIN; SQLite treats negative LIMIT as no limit, serializing the entire memories table into one JSON response (memory spike, hung connection).\n\n**Merged finding:** Both the MCP `list` tool and the IPC `list_memories` command forward unclamped limits into SQL LIMIT; negative/huge values mean unbounded scans. Fix once inside memory::list and clamp at both boundaries.",
+  "evidence": "let limit = args.get(\"limit\").and_then(|v| v.as_u64()).unwrap_or(50) as usize;",
+  "suggestion": "Clamp in the handler (limit.clamp(1, 500), mirroring bounded_k) or clamp inside memory::list.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json",
+   "ops-commands-state.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Spawn scheduler in the standalone MCP binary or hide consolidate_status",
+  "file": "src-tauri/src/bin/biturbo_mcp.rs",
+  "lines": "13-27",
+  "description": "The GUI spawns the consolidate scheduler (lib.rs:105) but the standalone MCP binary never does, while still exposing consolidate_status. In MCP-only sessions the tool reports idle/never-run forever and background decay/dedup never happens unless the agent manually calls consolidate.",
+  "evidence": "run_mcp_server_stdio().await   // no scheduler::spawn anywhere in main",
+  "suggestion": "Spawn the scheduler on the opened AppState inside run_mcp_server_stdio, or document consolidate_status as GUI-only.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Validate submit_recall_feedback value instead of defaulting and wrapping",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "192-199",
+  "description": "value defaults a missing/invalid value to +1 (unwrap_or(1)), silently recording positive feedback. Additionally `as i8` truncates: 256 becomes 0, 300 becomes 44, 1000 becomes -24 \u2014 out-of-range values flip or zero the feedback signal instead of being rejected, corrupting recall ranking.",
+  "evidence": "let value = args.get(\"value\").and_then(|v| v.as_i64()).unwrap_or(1) as i8;",
+  "suggestion": "Return Invalid when value missing; accept only -1 or 1.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Reject agent names that slugify to an empty id",
+  "file": "src-tauri/src/application.rs",
+  "lines": "129-152,169-181",
+  "description": "register_agent derives the primary key via slugify(name), which maps every non-alphanumeric-ASCII char to '-' and drops empty parts. A non-ASCII name yields id \"\" \u2014 all such agents collapse into one upserted ghost row with empty id. Returned AgentEntry always reports created_at=now even when upserting an existing row.",
+  "evidence": "let id = slugify(&name);\nOk(AgentEntry { id, name, kind, last_seen: now, created_at: now, meta })",
+  "suggestion": "Error on empty slug (fall back to uuid), read back actual created_at after upsert.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Verify explicit project_id exists in resolve_project_id",
+  "file": "src-tauri/src/project.rs",
+  "lines": "213-219",
+  "description": "An explicitly supplied project_id is returned without existence check, unlike remember/ingest paths which validate via require_project. search/recall_for_context with a typo'd id then return empty results ('no relevant memories') instead of an error, leading agents to wrongly conclude the project has no memories.",
+  "evidence": "if let Some(pid) = project_id.filter(|s| !s.is_empty()) {\n    return Ok(pid.to_string());\n}",
+  "suggestion": "Run project::get(state, pid) for the explicit-id branch and propagate NotFound.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Make .biTurbo projectName resolution deterministic on name collisions",
+  "file": "src-tauri/src/project.rs",
+  "lines": "228-245",
+  "description": "Resolution queries 'WHERE name = ?1 OR id = ?1 LIMIT 1'. Two projects can share a name; LIMIT 1 picks an arbitrary row and recall rooted at a directory whose .biTurbo says projectName=X can attach to the wrong project, surfacing another project's memories as context.",
+  "evidence": "\"SELECT id FROM projects WHERE name = ?1 OR id = ?1 LIMIT 1\"",
+  "suggestion": "Prefer exact id match; on multiple name matches return ambiguity error listing candidates.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Try-lock queued operations before resuming them in a second process",
+  "file": "src-tauri/src/lib.rs",
+  "lines": "105-107",
+  "description": "Both GUI and every MCP binary instance call operations::resume_pending on the shared data dir. resume_pending spawns executors for every 'queued' row without try-locking the per-operation lock; executors use blocking lock_exclusive. Two processes starting simultaneously both spawn a thread for the same queued op \u2014 second blocks then re-runs the entire operation after the first finishes (duplicate work, doubled activity records). recover_interrupted already models the correct try-lock-and-skip pattern.",
+  "evidence": "spawn_ingest(state.clone(), operation.id, project_id, root);  // no try_lock",
+  "suggestion": "try_lock the operation lock in resume_pending before spawning; skip ops already claimed by a live process.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Guard export_memories output_path against overwriting arbitrary files",
+  "file": "src-tauri/src/io.rs",
+  "lines": "133-149",
+  "description": "The MCP export_memories tool writes JSON to any caller-supplied output_path: create_dir_all's parent and unconditionally fs::write's, clobbering existing files. Exposed to LLM agents, this is an arbitrary-file-overwrite primitive reachable via prompt injection.",
+  "evidence": "if let Some(parent) = output_path.parent() {\n    std::fs::create_dir_all(parent).ok();\n}\nstd::fs::write(output_path, json)",
+  "suggestion": "Refuse to overwrite existing file unless explicit overwrite flag passed; confine exports beneath app data dir.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Drop the discarded inline instructions literal in initialize",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "63-75",
+  "description": "The initialize arm embeds a large hand-written instructions string then immediately overwrites response[\"result\"][\"instructions\"] with MCP_INSTRUCTIONS. Dead weight and drift hazard (two instruction texts to keep in sync).",
+  "evidence": "let mut response = ok(&id, json!({ ... \"instructions\": \"## biTurbo Memory Layer \u2014 Instructions\\n\\n...\" }));\nresponse[\"result\"][\"instructions\"] = Value::String(MCP_INSTRUCTIONS.into());",
+  "suggestion": "Build the result once from MCP_INSTRUCTIONS only.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Refresh tray stats immediately instead of after 30 seconds",
+  "file": "src-tauri/src/tray.rs",
+  "lines": "113-116",
+  "description": "The tray stats thread sleeps 30 seconds before its first query, so menu items show 'Memories: \u2014' for up to half a minute after launch.",
+  "evidence": ".spawn(move || loop {\n    std::thread::sleep(Duration::from_secs(30));",
+  "suggestion": "Run the refresh body once before entering the sleep loop.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Only hide the window on tray click when it is focused",
+  "file": "src-tauri/src/tray.rs",
+  "lines": "172-181",
+  "description": "toggle_main_window hides whenever is_visible() is true. A visible but unfocused window gets hidden by left-click instead of brought to front \u2014 opposite of toggle intent.",
+  "evidence": "match window.is_visible() {\n    Ok(true) => { let _ = window.hide(); }",
+  "suggestion": "Hide only when is_visible() && is_focused(); otherwise show and focus.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Send GUI tracing console output to stderr instead of stdout",
+  "file": "src-tauri/src/lib.rs",
+  "lines": "66-71",
+  "description": "init_logging attaches a tracing layer to std::io::stdout. Today MCP transport lives in a separate binary so protocol stream is safe \u2014 but any future in-process stdio use, or piping GUI stdout, interleaves log lines with data output. stderr is conventional for diagnostics.",
+  "evidence": ".with_writer(std::io::stdout),",
+  "suggestion": "Switch console layer to std::io::stderr.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Log resume_pending failures instead of discarding them",
+  "file": "src-tauri/src/lib.rs",
+  "lines": "106",
+  "description": "`let _ = operations::resume_pending(state_arc.clone());` discards the Result. If recovery fails (locked DB, IO error), queued operations silently never resume and nothing reaches logs.",
+  "evidence": "let _ = operations::resume_pending(state_arc.clone());",
+  "suggestion": "Match on error and tracing::error! it with context.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Fail gracefully at startup instead of panicking on expect",
+  "file": "src-tauri/src/lib.rs",
+  "lines": "95-103,155",
+  "description": "setup() uses expect() for app_data_dir and AppState::open, run() ends in expect(). A corrupted DB or unresolvable path makes the app crash-loop invisibly on macOS release builds (no console, no dialog), and no custom panic hook routes panics into the log file.",
+  "evidence": "let data_dir = app.path().app_data_dir().expect(\"app data dir resolvable\");\nlet mut state = AppState::open(&data_dir).expect(\"open app state\");",
+  "suggestion": "Install a panic hook logging to file appender; convert startup failures into user-visible dialog / clean non-zero exit.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Preserve SQLite error codes in BiError::Db",
+  "file": "src-tauri/src/error.rs",
+  "lines": "25-28",
+  "description": "From<rusqlite::Error> flattens to e.to_string(), discarding sqlite error code. Callers cannot programmatically distinguish UNIQUE violations from BUSY/READONLY, so surfaces emit raw strings and cannot map to friendly actionable messages.",
+  "evidence": "impl From<rusqlite::Error> for BiError {\n    fn from(e: rusqlite::Error) -> Self { BiError::Db(e.to_string()) }\n}",
+  "suggestion": "Carry e.sqlite_error_code()/extended code alongside message in Db variant.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Validate bit_width instead of truncating with as u8",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "139-156",
+  "description": "create_project reads bit_width as u64 then casts with `as u8`: values above 255 wrap silently (300 becomes 44) and unsupported widths flow unchecked into index quantization config, producing confusing downstream behavior instead of clear input error.",
+  "evidence": "bit_width: args.get(\"bit_width\").and_then(|v| v.as_u64()).map(|n| n as u8),",
+  "suggestion": "Use u8::try_from(n).ok() and validate against supported bit-width allowlist.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Surface .biTurbo marker write failures in create_project",
+  "file": "src-tauri/src/project.rs",
+  "lines": "83-90",
+  "description": "After inserting the project row, failure to write the .biTurbo marker swallowed with `let _ =`. If root_path doesn't exist or isn't writable, project created without marker and later root_path-based resolution silently falls back to default project \u2014 hard-to-diagnose isolation breakage. create also never checks root_path exists, unlike ensure_marker_files.",
+  "evidence": "if !biturbo_file.exists() {\n    let _ = std::fs::write(&biturbo_file, biturbo_file_content(&id, &input.name, now));\n}",
+  "suggestion": "Propagate write error (or log) and validate root_path.is_dir() at create time.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Purge recall_feedback rows when deleting a project",
+  "file": "src-tauri/src/project.rs",
+  "lines": "173-186",
+  "description": "delete removes memories and project row but leaves recall_feedback rows whose memory_uid belonged to deleted memories. Orphaned feedback accumulates unboundedly across project lifecycles keeping stale ranking signals.",
+  "evidence": "tx.execute(\"DELETE FROM memories WHERE project_id = ?1\", ...)?;\ntx.execute(\"DELETE FROM projects WHERE id = ?1\", ...)?;",
+  "suggestion": "Delete feedback for the project's uids within same transaction.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Support or cleanly reject JSON-RPC batch requests",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "31-38",
+  "description": "A top-level JSON array (JSON-RPC batch, permitted by MCP 2024-11-05 revision advertised) fails deserialization into JsonRpcRequest and is answered with single -32700 parse error instead of per-entry responses.",
+  "evidence": "match serde_json::from_str::<JsonRpcRequest>(trimmed) {\n    Ok(req) => dispatch(&state, req).await,\n    Err(e) => json!({ ... \"code\": -32700 ... })",
+  "suggestion": "Deserialize to Value; on Array dispatch each element and reply with array \u2014 or explicitly reject batches with -32600.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Fail loudly when SCHEMAS_JSON drifts from implemented tools",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "539-542",
+  "description": "tool_schemas() silently degrades to empty tools list if embedded JSON fails to parse \u2014 every client would see zero tools. Additionally 7 implemented handlers absent from SCHEMAS_JSON (intentional per 27-tool note) but nothing asserts advertised set matches dispatcher, so future drift invisible.",
+  "evidence": "fn tool_schemas() -> Value {\n    serde_json::from_str(SCHEMAS_JSON).unwrap_or_else(|_| json!([]))\n}",
+  "suggestion": "Panic or log error on schema parse failure; add unit test asserting every advertised tool has a call_tool arm.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "De-flake smoke tests: model dependency and fixed 3s windows",
+  "file": "src-tauri/src/smoke.rs",
+  "lines": "22-40",
+  "description": "Every smoke test opens full AppState (fastembed BGE embedder) and polls filesystem with fixed 200ms sleeps inside 3-second deadlines. On cold machine model must be present/downloaded before search works; on slow CI the 3s window can elapse before debounced flusher fires \u2014 flaky failures unrelated to regressions.",
+  "evidence": "while Instant::now() < deadline {\n    std::thread::sleep(Duration::from_millis(200));\n}",
+  "suggestion": "Use stub/deterministic embedder for tests or derive completion from observable flush events; make timeouts generous/configurable.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Share one app-identifier constant between MCP server and GUI",
+  "file": "src-tauri/src/mcp.rs",
+  "lines": "8-10",
+  "description": "run_mcp_server_stdio hardcodes dirs::data_dir().join(\"com.biturbo.app\"), duplicating identifier from tauri.conf.json. If bundle identifier ever changes, GUI and MCP server silently operate on different datasets.",
+  "evidence": "let data_dir = dirs::data_dir()\n    .ok_or_else(|| anyhow::anyhow!(\"no data dir\"))?\n    .join(\"com.biturbo.app\");",
+  "suggestion": "Export pub const APP_IDENTIFIER from biturbo_lib and use in both.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Do not fall back to CWD for the data dir in the MCP binary",
+  "file": "src-tauri/src/bin/biturbo_mcp.rs",
+  "lines": "14-16",
+  "description": "dirs::data_dir().unwrap_or_else(|| PathBuf::from(\".\")) makes the binary open/create com.biturbo.app under whatever directory the agent launched it from when OS data dir unavailable \u2014 silently splitting state and scattering logs into unrelated working directories.",
+  "evidence": "let data_dir = dirs::data_dir()\n    .unwrap_or_else(|| std::path::PathBuf::from(\".\"))\n    .join(\"com.biturbo.app\");",
+  "suggestion": "Exit with clear error when OS data dir cannot be determined instead of falling back to '.'.",
+  "slice": "backend-shell",
+  "sources": [
+   "mcp-shell.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "high",
+  "title": "Remove tracked vite.config.js that shadows vite.config.ts",
+  "file": "vite.config.js",
+  "lines": "1-25",
+  "description": "A compiled copy of vite.config.ts is committed AND git-tracked (verified via git ls-files: vite.config.js, vite.config.d.ts, tsconfig.tsbuildinfo, tsconfig.node.tsbuildinfo all tracked). Vite resolves config files in order vite.config.js -> vite.config.mjs -> vite.config.ts, so `vite`, `vite build`, and `tauri dev` load the .js file and silently ignore edits to vite.config.ts. `npm run build` (tsc -b) re-emits the .js so the build path self-heals, but `npm run dev` alone uses the stale copy \u2014 a config edit diverges silently in dev. Root cause: tsconfig.node.json is composite with no noEmit, so tsc -b emits JS+DTS+tsbuildinfo into repo root; .gitignore lists these files but they were committed before being ignored.",
+  "evidence": ".gitignore lists vite.config.d.ts / vite.config.js / tsbuildinfo \u2014 yet `git ls-files` reports all four as tracked; tsconfig.node.json sets \"composite\": true with no noEmit.",
+  "suggestion": "git rm --cached vite.config.js vite.config.d.ts tsconfig.tsbuildinfo tsconfig.node.tsbuildinfo; stop emitting by dropping composite/references and typechecking with tsc --noEmit.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Set a Content-Security-Policy instead of csp: null in tauri.conf.json",
+  "file": "src-tauri/tauri.conf.json",
+  "lines": "27-29",
+  "description": "The webview ships with CSP fully disabled. Tauri's security model treats the CSP as core defense-in-depth: with csp null, any HTML/script injection into the webview (biTurbo renders arbitrary agent/user-authored memory content and ingested code chunks) executes with full access to Tauri IPC and plugin permissions \u2014 including the unscoped fs read/write grants in capabilities/default.json. No dangerouslySetInnerHTML sink exists today, so this is hardening rather than open RCE, but the blast radius of any future rendering bug is total.",
+  "evidence": "\"security\": {\n      \"csp\": null\n    }",
+  "suggestion": "Define a strict CSP (default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: data:) relying on Tauri's automatic nonce/hash injection.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Revoke unused over-granted fs/shell/process/updater capabilities",
+  "file": "src-tauri/capabilities/default.json",
+  "lines": "21-29",
+  "description": "The only frontend plugin imports in src/ are plugin-dialog (Projects.tsx) and plugin-autostart (Settings.tsx); no plugin-fs/shell/process/updater usage anywhere in the webview (updater driven from Rust via UpdaterExt which needs no capability). fs:allow-read-text-file and fs:allow-write-text-file are granted WITHOUT scope objects, meaning the webview IPC surface can read/write arbitrary user-writable paths. Combined with csp:null this is pure attack surface with zero current functional benefit.",
+  "evidence": "\"fs:default\",\n    \"fs:allow-read-text-file\",\n    \"fs:allow-write-text-file\",\n    \"fs:allow-read-dir\",\n    \"fs:allow-exists\",\n    \"shell:default\", ...",
+  "suggestion": "Delete the fs/shell/process/updater permission entries (keep dialog, autostart, core:*), or add explicit scope objects.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Make ensure-sidecar-placeholder detect and refresh stale placeholder sidecars",
+  "file": "scripts/ensure-sidecar-placeholder.mjs",
+  "lines": "17-21",
+  "description": "The script writes the 11-byte text 'placeholder' but afterwards can never distinguish that placeholder from a real binary. If a build is interrupted between placeholder creation and the cargo/copy step, or a user follows docs/release.md troubleshooting before running a direct `tauri build`, the text file gets bundled as the biturbo-mcp externalBin and shipped \u2014 MCP tools then fail at spawn with cryptic exec-format/JSON errors. Nothing validates the bundled sidecar before packaging.",
+  "evidence": "if (!existsSync(dst)) {\n  mkdirSync(binariesDir, { recursive: true });\n  writeFileSync(dst, \"placeholder\");\n}",
+  "suggestion": "Read existing file: if content equals 'placeholder' (or size below sanity threshold), rewrite and warn; add post-copy sanity check in build-sidecar.mjs.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Build the MCP sidecar in run-wsl-cuda.mjs rebuild path",
+  "file": "scripts/run-wsl-cuda.mjs",
+  "lines": "119-135",
+  "description": "rebuild() runs `npm run build`, drops only a text placeholder, then builds just `cargo build --bin biturbo`. The biturbo-mcp sidecar is never compiled nor staged next to target/release/biturbo \u2014 this optimized WSL CUDA flow produces an app whose MCP server is missing (or a stale placeholder), breaking all MCP tools. Secondary: needsRebuild() scans src/, index.html, package.json, vite/tailwind configs but not public/, so changed public assets never trigger a dist rebuild.",
+  "evidence": "await run(\"node\", [\"scripts/ensure-sidecar-placeholder.mjs\"]);\nawait run(\"cargo\", [\"build\", ..., \"--bin\", \"biturbo\"]);",
+  "suggestion": "Also build --bin biturbo-mcp and copy to target/release (or call build-sidecar.mjs); include public/ in the mtime scan.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "medium",
+  "title": "Isolate MCP test harnesses from the production data directory",
+  "file": "scripts/mcp-smoke-test.ts",
+  "lines": "86-88",
+  "description": "mcp-smoke-test.ts (npm run mcp:test), recall-eval.ts and seed-memories.ts spawn biturbo-mcp with no environment override, and biturbo_mcp.rs hardcodes dirs::data_dir()/com.biturbo.app \u2014 every test run creates/deletes projects and memories in the user's real store, the same SQLite DB the GUI has open. Cleanup is success-path-only: delete_project runs inside try{} before finally, so any failed assertion, timeout, or crash leaves orphaned smoke-*/eval projects polluting real data.",
+  "evidence": "this.proc = spawn(bin, [], { stdio: [\"pipe\", \"pipe\", \"pipe\"] });  // no env/data-dir isolation",
+  "suggestion": "Support a BITURBO_DATA_DIR override in biturbo_mcp.rs, spawn harnesses with fresh mkdtemp dir, move cleanup into finally blocks.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "bug",
+  "severity": "low",
+  "title": "Guard release.yml workflow_dispatch from tagging a branch name",
+  "file": ".github/workflows/release.yml",
+  "lines": "126-130",
+  "description": "tagName derives from github.ref_name. On a manual workflow_dispatch run (documented in docs/release.md as the way to test the pipeline), ref_name is the branch name (e.g. 'main'), so tauri-action tries to create a draft release tagged 'main' containing binaries whose embedded version matches nothing.",
+  "evidence": "tagName: ${{ github.ref_name }}",
+  "suggestion": "Add a workflow_dispatch `tag` input validated against refs/tags/v*, or skip release upload unless github.ref starts with refs/tags/.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Purge committed tooling artifacts (.opencode dylibs, tsbuildinfo, session state)",
+  "file": ".opencode/tmp/",
+  "lines": "-",
+  "description": "git ls-files confirms ~9.4MB of tooling junk committed: seven ~896KB x86_64 macOS dylibs under .opencode/tmp/ plus a V8 node-compile-cache blob tree (useless on any other machine), the two tsconfig*.tsbuildinfo caches, vite.config.d.ts, and AI-tool state files (.omo/run-continuation/ses_*.json session continuation \u2014 potentially private conversation data, .cursor/hooks/state/*.json, .mavis/plans/*). Bloats every clone, creates spurious diffs/merge conflicts, leaks local tooling/session state. None covered by .gitignore.",
+  "evidence": "du -k .opencode/tmp/.*.dylib \u2192 7 \u00d7 896KB; git ls-files tracks .opencode/*, .omo/run-continuation/ses_*.json, .cursor/hooks/state/*.json, .mavis/plans/*, tsconfig*.tsbuildinfo, vite.config.d.ts.",
+  "suggestion": "git rm -r --cached .opencode .omo .mavis .cursor '*.tsbuildinfo' vite.config.d.ts and add these patterns to .gitignore.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Pick one package manager \u2014 package-lock.json and pnpm-lock.yaml are both tracked",
+  "file": "package-lock.json",
+  "lines": "1-8",
+  "description": "Two independent dependency-resolution sources committed: package-lock.json (used by CI's npm ci) and pnpm-lock.yaml, alongside pnpm-workspace.yaml. Contributors who install with pnpm update only pnpm-lock.yaml; CI then installs a stale tree from package-lock.json (or fails once it drifts out of sync with package.json). The repo mixes manager idioms: bun-style trustedDependencies, 'pnpm mcp:build' comments, npm everywhere else.",
+  "evidence": "git ls-files \u2192 package-lock.json AND pnpm-lock.yaml both tracked; ci.yml `run: npm ci`; package.json has \"trustedDependencies\".",
+  "suggestion": "Standardize on npm end-to-end (delete pnpm files) or commit to pnpm and switch CI/scripts; document in README.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Enforce version sync across package.json, Cargo.toml, tauri.conf.json",
+  "file": "scripts/release.mjs",
+  "lines": "7-15",
+  "description": "release.mjs reads only package.json and tags v<version>; it never verifies src-tauri/Cargo.toml, Cargo.lock, or tauri.conf.json. docs/release.md instructs manually bumping six files \u2014 miss one and the GitHub release ships v0.3.0 assets whose app self-reports the old tauri.conf.json version, so the updater endpoint keeps offering the same 'new' release forever and version checks lie. release.yml likewise never validates tag\u2194version agreement.",
+  "evidence": "const pkg = JSON.parse(readFileSync(\"package.json\", \"utf8\"));\nconst tag = `v${version}`;  // no comparison with src-tauri manifests",
+  "suggestion": "Before creating the tag, parse all four manifests and hard-fail on mismatch (or auto-sync them).",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Add frontend test/lint infrastructure and enforce it in CI",
+  "file": "package.json",
+  "lines": "11-31",
+  "description": "Rust gets fmt + clippy -D warnings + cargo test in CI, but the React 18/Zustand frontend has zero tests, zero linting, and no tooling installed (no vitest/eslint in devDependencies; no test/lint scripts). Frontend regressions \u2014 store logic, the entire api.ts invoke layer, view behavior \u2014 are caught only by TypeScript compilation. For an app whose product is trustworthy memory storage, the UI half ships with no safety net.",
+  "evidence": "scripts: { dev, build, preview, typecheck, tauri*, mcp:*, recall:eval, release } \u2014 no test or lint entry; ci.yml frontend coverage is just `npm run build`.",
+  "suggestion": "Add vitest + eslint with test/lint scripts wired into ci.yml; start with unit tests for lib/store and lib/api.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "medium",
+  "title": "Compress the 4.9MB public/logo.png used as favicon",
+  "file": "public/logo.png",
+  "lines": "-",
+  "description": "public/logo.png is 5,134,912 bytes and is referenced as the document favicon in index.html. Vite copies it verbatim into dist/, so every installer ships a 4.9MB file the webview downloads at startup to render a ~32\u00d732 tab icon \u2014 roughly 25\u00d7 larger than the actual app icon (196KB). Pure waste in bundle size, disk, and startup I/O.",
+  "evidence": "stat(public/logo.png) = 5134912 bytes; index.html:5 <link rel=\"icon\" type=\"image/png\" href=\"/logo.png\" />",
+  "suggestion": "Generate a small favicon set (32/64px PNG or .ico, \u226450KB) and move full-resolution logo out of public/.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Drop nonexistent landing/ package from pnpm-workspace.yaml",
+  "file": "pnpm-workspace.yaml",
+  "lines": "4-6",
+  "description": "The workspace declares a `landing` package but no landing/ directory exists anywhere in the repo. Depending on pnpm version this either fails install or silently no-ops; stale config that misleads contributors.",
+  "evidence": "packages:\n  - \".\"\n  - \"landing\"   \u2190 directory does not exist",
+  "suggestion": "Remove the - \"landing\" entry until the package exists.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Sync .biturboignore with .gitignore (missing src-tauri/binaries/)",
+  "file": ".biturboignore",
+  "lines": "36-38",
+  "description": ".biturboignore says it was 'created from .gitignore on first ingest' but has drifted: .gitignore ignores src-tauri/binaries/ (sidecar placeholders and multi-MB biturbo-mcp binaries) while .biturboignore only excludes src-tauri/target/ and src-tauri/gen/. biTurbo's own ingest will chunk and embed binary sidecar files into semantic memory, polluting search results and wasting index space.",
+  "evidence": "src-tauri/target/\nsrc-tauri/gen/     \u2190 .gitignore additionally lists src-tauri/binaries/",
+  "suggestion": "Regenerate .biturboignore from current .gitignore; ideally derive it at ingest time instead of maintaining a frozen copy.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Typecheck scripts/*.ts harnesses in CI",
+  "file": "tsconfig.json",
+  "lines": "21-22",
+  "description": "Eight TypeScript dev harnesses execute via node --experimental-strip-types, which strips types without checking them. No tsconfig includes scripts/ (root includes only src; tsconfig.node.json only vite.config.ts) and CI never typechecks them, so type errors accumulate silently until a harness crashes mid-run.",
+  "evidence": "\"include\": [\"src\"], \"references\": [{ \"path\": \"./tsconfig.node.json\" }]",
+  "suggestion": "Add tsconfig.scripts.json (noEmit, include scripts) plus a typecheck:scripts npm script wired into ci.yml.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Cache cargo builds, parallelize smoke job, cancel superseded CI runs",
+  "file": ".github/workflows/ci.yml",
+  "lines": "10-13",
+  "description": "Every CI run compiles the full Rust dependency tree from scratch \u2014 the rust job has no Swatinem/rust-cache (release.yml does, so the omission is inconsistent), and the mcp-smoke job uses needs: rust, serializing behind it and compiling everything again with no cache. No concurrency group, so pushed commits queue redundant full runs; no dependency-audit gate.",
+  "evidence": "jobs:\n  rust:\n    runs-on: ubuntu-latest   \u2190 no rust-cache step; mcp-smoke: `needs: rust`; no `concurrency:` block",
+  "suggestion": "Add swatinem/rust-cache@v2 to both jobs, drop needs: rust, add concurrency with cancel-in-progress, consider scheduled audit job.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Self-host fonts instead of fetching Google Fonts at every launch",
+  "file": "index.html",
+  "lines": "33-38",
+  "description": "The local-first desktop app preconnects to and downloads Fraunces/Inter/JetBrains Mono from fonts.googleapis.com on every window load. Offline \u2014 a primary scenario for a local memory tool \u2014 brand fonts fail silently and fall back, shifting layout; online, every launch leaks a request to Google, contradicting the local-first privacy positioning.",
+  "evidence": "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\" />",
+  "suggestion": "Vendor the three families as woff2 (fontsource packages or committed files), declare @font-face locally, drop external links.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Add LICENSE file promised by README badge and package.json license field",
+  "file": "README.md",
+  "lines": "13",
+  "description": "The README badge links to ./LICENSE and the footer says 'MIT.', but no LICENSE file exists in the repo (verified via git ls-files), and package.json has no license field. Without a license the code is 'all rights reserved' by default \u2014 contradicting the badge and legally blocking the reuse/forks the README invites.",
+  "evidence": "[![License: MIT](https://img.shields.io/badge/license-MIT-8FB87D.svg)](./LICENSE)   \u2192 ./LICENSE is not tracked",
+  "suggestion": "Commit the standard MIT LICENSE text and add \"license\": \"MIT\" to package.json.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Fix release docs: pipeline builds NSIS .exe, not .msi",
+  "file": "docs/release.md",
+  "lines": "32",
+  "description": "docs/release.md's build table claims the Windows release artifact is a .msi installer, but release.yml passes --bundles nsis, producing NSIS setup .exe files. README's Windows section similarly points readers at bundle/msi paths. Anyone following the docs looks for the wrong artifact name.",
+  "evidence": "| Windows x64 | `windows-latest` | `.msi` installer |   vs release.yml: args: \"--bundles nsis\"",
+  "suggestion": "Update docs to say NSIS .exe, or add msi to the release bundles.",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ },
+ {
+  "kind": "improvement",
+  "severity": "low",
+  "title": "Replace unmaintained fs2 and drop tokio 'full' feature bloat",
+  "file": "src-tauri/Cargo.toml",
+  "lines": "38-46",
+  "description": "fs2 is flagged unmaintained in the RustSec advisory DB (recommended successor fs4 offers the same FileExt API used for the cross-process write lock in db.rs). Separately, tokio's features = [\"full\"] pulls every optional subsystem into both the GUI binary and the MCP sidecar when only a small subset is needed \u2014 slower clean builds and larger binaries.",
+  "evidence": "tokio = { version = \"1\", features = [\"full\"] }\nfs2 = \"0.4\"",
+  "suggestion": "Migrate db.rs to fs4 (drop-in FileExt), narrow tokio to features actually used (rt-multi-thread, macros, sync, time).",
+  "slice": "build-ci",
+  "sources": [
+   "scripts-ci.json"
+  ]
+ }
+]

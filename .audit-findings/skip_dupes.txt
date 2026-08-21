@@ -1,0 +1,14 @@
+Bugs/Improvements: Releasing a pan triggers onClick and opens the node under the cursor	#197
+Bugs/Improvements: onWheel preventDefault is a no-op inside React's passive wheel listener	#195
+Bugs/Improvements: Ingest progress card shows an arbitrary job when several projects index at once	#149
+Bugs/Improvements: Fire-and-forget invokes (recall feedback, load more) have no error handling	#166
+Bugs/Improvements: Pagination indicator hidden above 200 memories and page math is misleading	#164
+Bugs/Improvements: Consolidate button gets stuck disabled forever when the consolidate run fails	#150
+Bugs/Improvements: loadMoreMemories trim keeps the OLDEST 500 memories and deletes the newest page from the list	#165
+Bugs/Improvements: store.startIngest/cancelIngest key ingestJobs by job_id while events key by project_id, orphaning entries	#116
+Bugs/Improvements: Overview 12-week activity heatmap is built from at most 25 activity entries, rendering it mostly empty	#179
+Bugs/Improvements: MemoryCard is a click-only div: keyboard users cannot open memory details	#160
+Bugs/Improvements: Toast is never announced to assistive tech (missing role=status / aria-live)	#156
+Bugs/Improvements: Heatmap weekday labels are misaligned: columns are rolling 7-day chunks, not calendar weeks	#180
+Bugs/Improvements: Persist the active project across restarts instead of always resetting to the first indexed project	#135
+Bugs/Improvements: text-dim and border-subtle Tailwind tokens alias wrong RGB triplets	#124
