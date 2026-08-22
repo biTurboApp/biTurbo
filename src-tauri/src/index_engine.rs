@@ -42,7 +42,7 @@ impl ProjectIndex {
         bit_width: usize,
         data_dir: &Path,
     ) -> BiResult<Self> {
-        if !matches!(bit_width, 2 | 3 | 4) {
+        if !(2..=4).contains(&bit_width) {
             return Err(BiError::Invalid(format!(
                 "bit_width must be 2, 3, or 4, got {bit_width}"
             )));
@@ -542,11 +542,11 @@ mod tests {
         let dim = 8;
         let idx = ProjectIndex::open_or_create("wd", dim, 4, &dir).unwrap();
 
-        assert!(idx.add("a", &vec![0.0; 4]).is_err());
+        assert!(idx.add("a", &[0.0; 4]).is_err());
         assert!(idx.add_batch(&[("a".to_string(), vec![0.0; 4])]).is_err());
-        assert!(idx.search(&vec![0.0; 4], 3, None).is_err());
+        assert!(idx.search(&[0.0; 4], 3, None).is_err());
         assert!(idx
-            .search_filtered(&vec![0.0; 4], 3, &["a".to_string()])
+            .search_filtered(&[0.0; 4], 3, &["a".to_string()])
             .is_err());
         // Nothing was added by the failed calls.
         assert_eq!(idx.len(), 0);
