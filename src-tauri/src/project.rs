@@ -58,7 +58,14 @@ pub struct CreateProjectInput {
 
 pub fn create(state: &AppState, input: CreateProjectInput) -> BiResult<Project> {
     let id = input.id.unwrap_or_else(|| slugify(&input.name));
-    let bit_width = input.bit_width.unwrap_or(4) as i64;
+    validate_project_id(&id)?;
+    let bit_width = input.bit_width.unwrap_or(4);
+    if !(2..=4).contains(&bit_width) {
+        return Err(BiError::Invalid(format!(
+            "bit_width must be one of 2, 3, 4 (got {bit_width})"
+        )));
+    }
+    let bit_width = bit_width as i64;
     let dim = state.embedder.dim as i64;
     let now = chrono::Utc::now().timestamp_millis();
 
@@ -149,6 +156,10 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
     if id == state.default_project_id {
         return Err(BiError::Invalid("cannot delete default project".into()));
     }
+    // Defense in depth: a legacy row with a traversal-shaped id must never
+    // reach the filesystem path joins below (both the mutation lock file and
+    // the index files are named after the raw id).
+    validate_project_id(id)?;
     get(state, id)?;
     let lock = OpenOptions::new()
         .create(true)
@@ -279,4 +290,62 @@ pub fn slugify(s: &str) -> String {
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Project ids become filenames (`indices/{id}.tvim`) and reach SQL and the
+/// `.biTurbo` marker, so they are restricted to a safe charset. Blocks path
+/// traversal (`../..`), separators, whitespace/control chars, and absurd
+/// lengths. Slugified names always pass.
+pub fn validate_project_id(id: &str) -> BiResult<()> {
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(BiError::Invalid(format!(
+            "project id '{id}' is invalid: use 1-64 characters of [a-zA-Z0-9_-]"
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugified_names_always_pass_validation() {
+        for name in ["My Project", "äöh_what??", "a/b/c"] {
+            validate_project_id(&slugify(name)).expect(name);
+        }
+        // Names with no slugifiable characters collapse to an empty id and
+        // are rejected — create_project surfaces that as Invalid instead of
+        // persisting a broken empty-id row.
+        assert!(validate_project_id(&slugify("...")).is_err());
+    }
+
+    #[test]
+    fn traversal_and_separator_ids_are_rejected() {
+        for bad in [
+            "../../etc/passwd",
+            "foo/bar",
+            "foo\\bar",
+            "..",
+            "line1\nline2",
+            "",
+            "has space",
+        ] {
+            assert!(validate_project_id(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn id_length_is_capped() {
+        let ok = "a".repeat(64);
+        assert!(validate_project_id(&ok).is_ok());
+        let too_long = "a".repeat(65);
+        assert!(validate_project_id(&too_long).is_err());
+    }
 }

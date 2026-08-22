@@ -7,7 +7,7 @@ use crate::error::{BiError, BiResult};
 use crate::index_engine::ProjectIndex;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -132,50 +132,62 @@ impl AppState {
         for (pid, dim, bw) in rows {
             let file_path = data_dir.join(format!("{pid}.tvim"));
             if !file_path.exists() {
-                let idx = ProjectIndex::open_or_create(&pid, dim, bw as usize, &data_dir)
-                    .expect("create project index");
-                let _ = idx.flush();
+                match ProjectIndex::open_or_create(&pid, dim, bw as usize, &data_dir) {
+                    Ok(idx) => {
+                        let _ = idx.flush();
+                    }
+                    Err(e) => {
+                        // A bad projects row must not abort startup: in release
+                        // builds a panic here (panic=abort) bricks every launch.
+                        tracing::error!("failed to create index for project '{pid}': {e}");
+                        continue;
+                    }
+                }
             }
         }
         Ok(())
     }
 
     pub fn get_or_load_index(&self, project_id: &str) -> BiResult<Arc<ProjectIndex>> {
-        {
-            let indices = self.indices.read();
-            if let Some(idx) = indices.get(project_id).cloned() {
+        // Ids become index filenames, so block traversal-shaped ids at this chokepoint.
+        crate::project::validate_project_id(project_id)?;
+
+        // Hold the write lock across the whole load path (#409): re-checking
+        // the cache under it makes concurrent first-opens atomic, so two
+        // threads can never double-open the same .tvim file.
+        let idx = {
+            let mut indices = self.indices.write();
+            if let Some(cached) = indices.get(project_id).cloned() {
                 self.index_access_times
                     .lock()
                     .insert(project_id.to_string(), Instant::now());
-                return Ok(idx);
+                return Ok(cached);
             }
-        }
-        // Open the one missing file directly without scanning the projects table.
-        let conn = self.db.conn()?;
-        let row: Option<(i64, i64)> = conn
-            .query_row(
-                "SELECT dim, bit_width FROM projects WHERE id = ?1",
-                rusqlite::params![project_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .ok();
-        let (dim, bw) = match row {
-            Some((d, b)) => (d as usize, b as u8 as usize),
-            None => return Err(BiError::NotFound(format!("project {project_id}"))),
-        };
-        let idx = Arc::new(ProjectIndex::open_or_create(
-            project_id,
-            dim,
-            bw,
-            &self.data_dir.join("indices"),
-        )?);
-        {
-            let mut indices = self.indices.write();
-            indices.insert(project_id.to_string(), idx.clone());
+            // Open the one missing file directly without scanning the projects table.
+            let conn = self.db.conn()?;
+            let row: Option<(i64, i64)> = conn
+                .query_row(
+                    "SELECT dim, bit_width FROM projects WHERE id = ?1",
+                    rusqlite::params![project_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+            let (dim, bw) = match row {
+                Some((d, b)) => (d as usize, b as u8 as usize),
+                None => return Err(BiError::NotFound(format!("project {project_id}"))),
+            };
+            let loaded = Arc::new(ProjectIndex::open_or_create(
+                project_id,
+                dim,
+                bw,
+                &self.data_dir.join("indices"),
+            )?);
+            indices.insert(project_id.to_string(), loaded.clone());
             self.index_access_times
                 .lock()
                 .insert(project_id.to_string(), Instant::now());
-        }
+            loaded // write lock released here, before the budget check below
+        };
         let _ = self.evict_if_over_budget();
         Ok(idx)
     }
@@ -198,6 +210,9 @@ impl AppState {
 
     /// Evict least-recently-used indices until the loaded set is under budget.
     fn evict_if_over_budget(&self) -> BiResult<()> {
+        // Candidates another thread still holds a clone of; excluded so the
+        // loop below cannot spin on the same LRU entry forever.
+        let mut skipped: HashSet<String> = HashSet::new();
         loop {
             let budget = self.index_memory_budget;
             let used = self.loaded_index_bytes();
@@ -206,20 +221,40 @@ impl AppState {
             }
             let lru_pid = {
                 let times = self.index_access_times.lock();
-                let mut candidates: Vec<(String, Instant)> =
-                    times.iter().map(|(k, v)| (k.clone(), *v)).collect();
-                candidates.sort_by_key(|a| a.1);
+                let mut candidates: Vec<(String, Instant)> = times
+                    .iter()
+                    .filter(|(k, _)| !skipped.contains(*k))
+                    .map(|(k, v)| (k.clone(), *v))
+                    .collect();
+                candidates.sort_by_key(|(_, v)| *v);
                 candidates.into_iter().map(|(k, _)| k).next()
             };
             if let Some(pid) = lru_pid {
                 let mut indices = self.indices.write();
-                indices.remove(&pid);
-                self.index_access_times.lock().remove(&pid);
-                tracing::info!(
-                    "evicted index '{}' to stay under {} MiB budget",
-                    pid,
-                    budget / 1024 / 1024
-                );
+                // Two guards (#410): flush before dropping the map's reference
+                // so an unflushed index never loses writes, and skip any index
+                // whose Arc is still cloned elsewhere (the map itself holds
+                // one) — evicting it would detach an instance another thread
+                // is using.
+                match indices.get(&pid).cloned() {
+                    Some(idx) if Arc::strong_count(&idx) == 1 => {
+                        let _ = idx.flush();
+                        indices.remove(&pid);
+                        self.index_access_times.lock().remove(&pid);
+                        tracing::info!(
+                            "evicted index '{}' to stay under {} MiB budget",
+                            pid,
+                            budget / 1024 / 1024
+                        );
+                    }
+                    Some(_) => {
+                        skipped.insert(pid);
+                    }
+                    None => {
+                        // Stale tracking entry without a loaded index.
+                        self.index_access_times.lock().remove(&pid);
+                    }
+                }
             } else {
                 break;
             }
@@ -242,6 +277,15 @@ impl AppState {
             let mut indices = self.indices.write();
             let mut times = self.index_access_times.lock();
             for pid in to_evict {
+                // Same guards as evict_if_over_budget (#410): flush before
+                // dropping our reference, and leave alone any index whose Arc
+                // is still cloned elsewhere.
+                if let Some(idx) = indices.get(&pid).cloned() {
+                    if Arc::strong_count(&idx) > 1 {
+                        continue;
+                    }
+                    let _ = idx.flush();
+                }
                 indices.remove(&pid);
                 times.remove(&pid);
                 tracing::info!("evicted stale index '{}'", pid);

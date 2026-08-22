@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tracing;
 
 #[cfg(feature = "cuda")]
-use ort::execution_providers::{ExecutionProvider, CUDAExecutionProvider};
+use ort::execution_providers::{CUDAExecutionProvider, ExecutionProvider};
 
 static EMBED_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -197,7 +197,9 @@ fn cuda_available() -> bool {
     match CUDAExecutionProvider::default().is_available() {
         Ok(true) => true,
         Ok(false) => {
-            tracing::warn!("embed: ORT built with CUDA but CUDAExecutionProvider not in available providers");
+            tracing::warn!(
+                "embed: ORT built with CUDA but CUDAExecutionProvider not in available providers"
+            );
             false
         }
         Err(e) => {
@@ -223,10 +225,7 @@ fn execution_providers() -> Vec<ExecutionProviderDispatch> {
                     "embed: BITURBO_EMBED_EP=cuda but CUDA EP unavailable; will try register then fall back to CPU"
                 );
             }
-            vec![
-                CUDAExecutionProvider::default().build(),
-                cpu_provider(),
-            ]
+            vec![CUDAExecutionProvider::default().build(), cpu_provider()]
         }
         #[cfg(feature = "cuda")]
         _ => {
@@ -236,10 +235,7 @@ fn execution_providers() -> Vec<ExecutionProviderDispatch> {
             } else {
                 tracing::info!("embed: CUDA not available — using CPUExecutionProvider");
             }
-            vec![
-                CUDAExecutionProvider::default().build(),
-                cpu_provider(),
-            ]
+            vec![CUDAExecutionProvider::default().build(), cpu_provider()]
         }
         #[cfg(not(feature = "cuda"))]
         _ => {
@@ -310,9 +306,7 @@ mod tests {
         std::env::set_var("BITURBO_EMBED_EP", "cpu");
         let (model_enum, _, _) = resolve_model(DEFAULT_MODEL).unwrap();
         let model = load_model(model_enum).expect("load BGE-small on CPU");
-        let out = model
-            .embed(vec!["hello biTurbo"], Some(1))
-            .expect("embed");
+        let out = model.embed(vec!["hello biTurbo"], Some(1)).expect("embed");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].len(), DEFAULT_DIM);
     }
