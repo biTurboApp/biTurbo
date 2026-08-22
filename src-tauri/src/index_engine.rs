@@ -42,23 +42,26 @@ impl ProjectIndex {
         bit_width: usize,
         data_dir: &Path,
     ) -> BiResult<Self> {
+        if !matches!(bit_width, 2 | 3 | 4) {
+            return Err(BiError::Invalid(format!(
+                "bit_width must be 2, 3, or 4, got {bit_width}"
+            )));
+        }
         std::fs::create_dir_all(data_dir).ok();
         let file_path = data_dir.join(format!("{project_id}.tvim"));
 
         let (index, uid_to_extid, extid_to_uid, next_extid) = if file_path.exists() {
-            let idx = IdMapIndex::load(&file_path)
-                .map_err(|e| BiError::Index(format!("load {file_path:?}: {e}")))?;
-            let meta_path = meta_path_for(&file_path);
-            let (u2e, e2u, n) = if meta_path.exists() {
-                let bytes = std::fs::read(&meta_path)?;
-                let map: HashMap<String, u64> = serde_json::from_slice(&bytes).unwrap_or_default();
-                let e2u: HashMap<u64, String> = map.iter().map(|(u, e)| (*e, u.clone())).collect();
-                let n = map.values().copied().max().unwrap_or(0);
-                (map, e2u, n + 1)
-            } else {
-                (HashMap::new(), HashMap::new(), 1)
-            };
-            (idx, u2e, e2u, n)
+            match load_existing(project_id, &file_path, dim)? {
+                Some(state) => state,
+                None => {
+                    // Sidecar/index pair was inconsistent and self-healed;
+                    // start from a fresh empty index (AppState re-backfills
+                    // from SQLite on next use).
+                    let idx = IdMapIndex::new(dim, bit_width)
+                        .map_err(|e| BiError::Index(format!("new: {e}")))?;
+                    (idx, HashMap::new(), HashMap::new(), 1)
+                }
+            }
         } else {
             let idx =
                 IdMapIndex::new(dim, bit_width).map_err(|e| BiError::Index(format!("new: {e}")))?;
@@ -86,7 +89,9 @@ impl ProjectIndex {
     }
 
     pub fn add(&self, uid: &str, vector: &[f32]) -> BiResult<()> {
-        assert_eq!(vector.len(), self.dim, "vector dim mismatch");
+        if vector.len() != self.dim {
+            return Err(dim_mismatch_error(vector.len(), self.dim));
+        }
         let mut inner = self.inner.lock();
         inner.add_one(uid, vector)?;
         drop(inner);
@@ -101,12 +106,18 @@ impl ProjectIndex {
         if items.is_empty() {
             return Ok(());
         }
+        // Validate every vector up front so a bad dim can't leave the maps
+        // partially mutated.
+        for (_, vector) in items {
+            if vector.len() != self.dim {
+                return Err(dim_mismatch_error(vector.len(), self.dim));
+            }
+        }
         let mut inner = self.inner.lock();
         let mut flat: Vec<f32> = Vec::with_capacity(items.len() * self.dim);
         let mut ids: Vec<u64> = Vec::with_capacity(items.len());
         let mut seen: HashSet<&str> = HashSet::new();
         for (uid, vector) in items {
-            assert_eq!(vector.len(), self.dim, "vector dim mismatch");
             if !seen.insert(uid) {
                 tracing::warn!(
                     "index: duplicate uid '{}' skipped in add_batch ({} items, ext-ids so far {})",
@@ -189,15 +200,32 @@ impl ProjectIndex {
             .map_err(|e| BiError::Index(format!("write: {e}")))?;
         let meta = meta_path_for(&self.file_path);
         let tmp_meta = meta.with_extension("json.tmp");
+        let tvim_len = std::fs::metadata(&tmp_index)?.len();
+        let envelope = UidMapEnvelope {
+            version: 1,
+            tvim_len,
+            next_extid: inner.next_extid,
+            map: inner.uid_to_extid.clone(),
+        };
         {
             let file = std::fs::File::create(&tmp_meta)?;
             let mut w = std::io::BufWriter::new(file);
-            serde_json::to_writer(&mut w, &inner.uid_to_extid)?;
+            serde_json::to_writer(&mut w, &envelope)?;
             w.flush()?;
         }
+        // Durable persist: fsync both temp files before the renames, then
+        // fsync the directory so the renames themselves survive a crash.
+        std::fs::File::open(&tmp_index)?.sync_all()?;
+        std::fs::File::open(&tmp_meta)?.sync_all()?;
         drop(inner);
         std::fs::rename(&tmp_index, &self.file_path)?;
         std::fs::rename(&tmp_meta, &meta)?;
+        if let Some(dir) = self.file_path.parent() {
+            // Directory fsync is unsupported on some platforms; ignore.
+            if let Ok(dir_file) = std::fs::File::open(dir) {
+                let _ = dir_file.sync_all();
+            }
+        }
         self.dirty.store(false, Ordering::Release);
         Ok(true)
     }
@@ -208,7 +236,9 @@ impl ProjectIndex {
         k: usize,
         allowlist_uids: Option<&[String]>,
     ) -> BiResult<Vec<SearchHit>> {
-        assert_eq!(query.len(), self.dim, "query dim mismatch");
+        if query.len() != self.dim {
+            return Err(dim_mismatch_error(query.len(), self.dim));
+        }
         let inner = self.inner.lock();
 
         let allowlist_extids: Option<Vec<u64>> = allowlist_uids.map(|uids| {
@@ -218,15 +248,22 @@ impl ProjectIndex {
         });
 
         let (scores, ids) = match allowlist_extids.as_ref() {
-            Some(v) => inner
-                .index
-                .search_with_allowlist(query, k, Some(v.as_slice())),
+            // turbovec asserts non-empty allowlists; uids that map to no
+            // extid mean nothing can match, so return no hits instead.
+            Some(v) if !v.is_empty() => {
+                inner
+                    .index
+                    .search_with_allowlist(query, k, Some(v.as_slice()))
+            }
+            Some(_) => return Ok(Vec::new()),
             None => inner.index.search(query, k),
         };
 
         Ok(ids
             .into_iter()
             .zip(scores)
+            // turbovec pads short result rows with score -inf / ext id 0.
+            .filter(|(_, score)| *score != f32::NEG_INFINITY)
             .filter_map(|(id, score)| {
                 inner.extid_to_uid.get(&id).map(|uid| SearchHit {
                     uid: uid.clone(),
@@ -246,13 +283,17 @@ impl ProjectIndex {
         k: usize,
         filter_uids: &[String],
     ) -> BiResult<Vec<SearchHit>> {
-        assert_eq!(query.len(), self.dim, "query dim mismatch");
+        if query.len() != self.dim {
+            return Err(dim_mismatch_error(query.len(), self.dim));
+        }
         let filter: HashSet<&str> = filter_uids.iter().map(|s| s.as_str()).collect();
         let inner = self.inner.lock();
         let (scores, ids) = inner.index.search(query, k);
         Ok(ids
             .into_iter()
             .zip(scores)
+            // turbovec pads short result rows with score -inf / ext id 0.
+            .filter(|(_, score)| *score != f32::NEG_INFINITY)
             .filter_map(|(id, score)| {
                 inner
                     .extid_to_uid
@@ -309,12 +350,117 @@ fn meta_path_for(tvim: &Path) -> PathBuf {
     p
 }
 
+/// Versioned envelope for the `{pid}.uidmap.json` sidecar. `tvim_len` pins the
+/// map to the exact .tvim it was written for, so a torn rename or mixed-up
+/// file pair is detectable instead of silently mapping a live index onto
+/// stale uids.
+#[derive(Debug, Serialize, Deserialize)]
+struct UidMapEnvelope {
+    version: u32,
+    tvim_len: u64,
+    next_extid: u64,
+    map: HashMap<String, u64>,
+}
+
+fn dim_mismatch_error(got: usize, expected: usize) -> BiError {
+    BiError::Index(format!(
+        "dimension mismatch: got {got}, project index expects {expected} — the embedding model likely changed; re-ingest or rebuild this project's index"
+    ))
+}
+
+type LoadedState = (IdMapIndex, HashMap<String, u64>, HashMap<u64, String>, u64);
+
+/// Load an existing .tvim + uidmap sidecar pair. Returns `Ok(None)` when the
+/// pair was inconsistent and was self-healed (stale files deleted; the caller
+/// must create a fresh empty index).
+fn load_existing(project_id: &str, file_path: &Path, dim: usize) -> BiResult<Option<LoadedState>> {
+    let idx = IdMapIndex::load(file_path)
+        .map_err(|e| BiError::Index(format!("load {file_path:?}: {e}")))?;
+    if idx.dim() != dim {
+        return Err(BiError::Index(format!(
+            "index dim {} != requested dim {dim} for project '{project_id}' — the embedding model likely changed; rebuild required",
+            idx.dim()
+        )));
+    }
+    let meta_path = meta_path_for(file_path);
+    let tvim_len = std::fs::metadata(file_path)?.len();
+    let mut map: HashMap<String, u64> = HashMap::new();
+    let mut stored_next_extid: Option<u64> = None;
+    let mut heal_reason: Option<String> = None;
+    if meta_path.exists() {
+        let bytes = std::fs::read(&meta_path)?;
+        match serde_json::from_slice::<UidMapEnvelope>(&bytes) {
+            Ok(env) if env.version == 1 => {
+                if env.tvim_len != tvim_len {
+                    heal_reason = Some(format!(
+                        "uidmap tvim_len {} does not match .tvim length {tvim_len}",
+                        env.tvim_len
+                    ));
+                } else {
+                    map = env.map;
+                    stored_next_extid = Some(env.next_extid);
+                }
+            }
+            Ok(_) => {
+                heal_reason =
+                    Some("uidmap sidecar has an unsupported envelope version".to_string());
+            }
+            Err(_) => match serde_json::from_slice::<HashMap<String, u64>>(&bytes) {
+                // Legacy pre-envelope sidecar: bare uid -> extid map, no
+                // length pinning possible — accept as-is.
+                // An empty legacy map over an existing .tvim is the exact
+                // "empty id-map over live vectors" state we must never keep.
+                Ok(bare) if bare.is_empty() => {
+                    heal_reason = Some("legacy uidmap is empty while .tvim exists".to_string());
+                }
+                Ok(bare) => map = bare,
+                Err(_) => {
+                    heal_reason = Some("uidmap sidecar is corrupt/unparseable".to_string());
+                }
+            },
+        }
+    } else {
+        heal_reason = Some("uidmap sidecar missing while .tvim exists".to_string());
+    }
+    if let Some(reason) = heal_reason {
+        self_heal_stale_index(project_id, file_path, &reason)?;
+        return Ok(None);
+    }
+    let extid_to_uid: HashMap<u64, String> =
+        map.iter().map(|(uid, ext)| (*ext, uid.clone())).collect();
+    let recomputed_next = map.values().copied().max().unwrap_or(0) + 1;
+    let next_extid = match stored_next_extid {
+        Some(stored) => stored.max(recomputed_next),
+        None => recomputed_next,
+    };
+    Ok(Some((idx, map, extid_to_uid, next_extid)))
+}
+
+/// Delete a stale/inconsistent .tvim + sidecar pair (and any .tmp leftovers)
+/// so a fresh empty index can be created. Never keep vectors without a
+/// matching id map.
+fn self_heal_stale_index(project_id: &str, file_path: &Path, reason: &str) -> BiResult<()> {
+    tracing::warn!(
+        "index: inconsistent on-disk pair for project '{project_id}' ({reason}); deleting stale index files and starting fresh"
+    );
+    let meta_path = meta_path_for(file_path);
+    let _ = std::fs::remove_file(file_path);
+    let _ = std::fs::remove_file(&meta_path);
+    let _ = std::fs::remove_file(file_path.with_extension("tvim.tmp"));
+    let _ = std::fs::remove_file(meta_path.with_extension("json.tmp"));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn vec_for(seed: f32, dim: usize) -> Vec<f32> {
         (0..dim).map(|i| (i as f32 * 0.01 + seed).sin()).collect()
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("biturbo-test-{name}-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]
@@ -357,6 +503,145 @@ mod tests {
 
         assert!(reloaded.remove("uid-7").unwrap());
         assert_eq!(reloaded.len(), 50);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn wrong_dim_and_bit_width_return_err() {
+        let dir = temp_dir("wrong-dim");
+        let dim = 8;
+        let idx = ProjectIndex::open_or_create("wd", dim, 4, &dir).unwrap();
+
+        assert!(idx.add("a", &vec![0.0; 4]).is_err());
+        assert!(idx.add_batch(&[("a".to_string(), vec![0.0; 4])]).is_err());
+        assert!(idx.search(&vec![0.0; 4], 3, None).is_err());
+        assert!(idx
+            .search_filtered(&vec![0.0; 4], 3, &["a".to_string()])
+            .is_err());
+        // Nothing was added by the failed calls.
+        assert_eq!(idx.len(), 0);
+
+        // bit_width outside {2,3,4} is rejected before touching disk.
+        assert!(ProjectIndex::open_or_create("wd-bw", dim, 5, &dir).is_err());
+
+        // Reopening the same .tvim with a different dim must fail loudly.
+        idx.add("a", &vec_for(1.0, dim)).unwrap();
+        idx.flush().unwrap();
+        assert!(ProjectIndex::open_or_create("wd", dim * 2, 4, &dir).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corrupt_uidmap_self_heals() {
+        let dir = temp_dir("corrupt-uidmap");
+        let dim = 8;
+        let idx = ProjectIndex::open_or_create("sh", dim, 4, &dir).unwrap();
+        idx.add("a", &vec_for(1.0, dim)).unwrap();
+        idx.flush().unwrap();
+        assert!(dir.join("sh.tvim").exists());
+
+        std::fs::write(dir.join("sh.uidmap.json"), b"{corrupt json").unwrap();
+        let reopened = ProjectIndex::open_or_create("sh", dim, 4, &dir).unwrap();
+        assert_eq!(reopened.len(), 0);
+        // The stale .tvim was deleted along with the corrupt meta.
+        assert!(!dir.join("sh.tvim").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tvim_len_mismatch_self_heals() {
+        let dir = temp_dir("tvim-len-mismatch");
+        let dim = 8;
+        let idx = ProjectIndex::open_or_create("sh", dim, 4, &dir).unwrap();
+        idx.add("a", &vec_for(1.0, dim)).unwrap();
+        idx.flush().unwrap();
+
+        // Append a byte so the sidecar's tvim_len no longer matches.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("sh.tvim"))
+            .unwrap();
+        f.write_all(b"\x00").unwrap();
+
+        let reopened = ProjectIndex::open_or_create("sh", dim, 4, &dir).unwrap();
+        assert_eq!(reopened.len(), 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_bare_map_meta_still_loads() {
+        let dir = temp_dir("legacy-meta");
+        let dim = 8;
+        let idx = ProjectIndex::open_or_create("lg", dim, 4, &dir).unwrap();
+        idx.add("a", &vec_for(1.0, dim)).unwrap();
+        idx.flush().unwrap();
+
+        // Rewrite the sidecar as a legacy bare uid -> extid map (extid 1).
+        let bare: HashMap<String, u64> = [("a".to_string(), 1u64)].into_iter().collect();
+        std::fs::write(
+            dir.join("lg.uidmap.json"),
+            serde_json::to_vec(&bare).unwrap(),
+        )
+        .unwrap();
+
+        let reloaded = ProjectIndex::open_or_create("lg", dim, 4, &dir).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert!(reloaded.contains_uid("a"));
+        let hits = reloaded.search(&vec_for(1.0, dim), 1, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].uid, "a");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_never_returns_sentinel_pad_hits() {
+        let dir = temp_dir("pads");
+        let dim = 8;
+        let idx = ProjectIndex::open_or_create("pd", dim, 4, &dir).unwrap();
+        let items: Vec<(String, Vec<f32>)> = (0..3)
+            .map(|i| (format!("uid-{i}"), vec_for(i as f32, dim)))
+            .collect();
+        idx.add_batch(&items).unwrap();
+
+        let all_uids: Vec<String> = (0..3).map(|i| format!("uid-{i}")).collect();
+        for hits in [
+            idx.search(&vec_for(0.5, dim), 10, None).unwrap(),
+            idx.search_filtered(&vec_for(0.5, dim), 10, &all_uids)
+                .unwrap(),
+        ] {
+            // k=10 > 3 items: turbovec pads to k, but pads must be dropped.
+            assert_eq!(hits.len(), 3);
+            for h in hits {
+                assert!(h.score != f32::NEG_INFINITY);
+                assert!(h.ext_id != 0, "sentinel pad id leaked into results");
+                assert!(h.uid.starts_with("uid-"));
+            }
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn next_extid_survives_persist_reload() {
+        let dir = temp_dir("next-extid");
+        let dim = 8;
+        let idx = ProjectIndex::open_or_create("ne", dim, 4, &dir).unwrap();
+        idx.add("A", &vec_for(1.0, dim)).unwrap();
+        idx.flush().unwrap();
+
+        let idx = ProjectIndex::open_or_create("ne", dim, 4, &dir).unwrap();
+        idx.add("B", &vec_for(2.0, dim)).unwrap();
+        idx.flush().unwrap();
+
+        let reloaded = ProjectIndex::open_or_create("ne", dim, 4, &dir).unwrap();
+        assert_eq!(reloaded.len(), 2);
+        assert!(reloaded.contains_uid("A"));
+        assert!(reloaded.contains_uid("B"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
