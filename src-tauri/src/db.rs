@@ -56,21 +56,50 @@ pub fn rebuild_fts_index(conn: &rusqlite::Connection) -> BiResult<usize> {
 pub fn init_schema(conn: &rusqlite::Connection) -> BiResult<()> {
     conn.execute_batch(SCHEMA)?;
 
+    let mut added_decay_base = false;
     for (table, col, decl) in &[
         ("projects", "embed_model", "TEXT"),
         ("projects", "watch_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("memories", "decay_base", "REAL"),
     ] {
         let present: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
-                rusqlite::params![table, col],
+                params![table, col],
                 |r| r.get(0),
             )
             .unwrap_or(0);
         if present == 0 {
             let sql = format!("ALTER TABLE {table} ADD COLUMN {col} {decl}");
             conn.execute_batch(&sql)?;
+            if *col == "decay_base" {
+                added_decay_base = true;
+            }
         }
+    }
+
+    // Seed the decay baseline from current importances exactly once, so
+    // consolidate can recompute decayed importance idempotently (#435).
+    if added_decay_base {
+        conn.execute("UPDATE memories SET decay_base = importance", [])?;
+    }
+
+    // One-time repair for FTS rows left stale by INSERT OR REPLACE bypassing
+    // the delete trigger (#525): rebuild the full-text index once per database.
+    let fts_repaired: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'fts_rebuild_v1'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if fts_repaired.is_none() {
+        let n = rebuild_fts_index(conn)?;
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES('fts_rebuild_v1', '1')",
+            [],
+        )?;
+        tracing::info!("one-time FTS rebuild after upgrade: {n} rows reindexed");
     }
 
     Ok(())

@@ -122,9 +122,9 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
         }
         tx.execute(
             "INSERT INTO memories(uid, project_id, mem_type, content, tags, source_agent,
-                                  importance, created_at, updated_at, last_access,
+                                  importance, decay_base, created_at, updated_at, last_access,
                                   access_count, file_path, start_line, end_line, language)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?8,0,?9,?10,?11,?12)",
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8,?8,?8,0,?9,?10,?11,?12)",
             rusqlite::params![
                 uid,
                 project_id,
@@ -221,7 +221,7 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
     state.db.write(|tx| {
         tx.execute(
             "UPDATE memories SET content = ?1, mem_type = ?2, tags = ?3,
-                                 importance = ?4, updated_at = ?5
+                                 importance = ?4, decay_base = ?4, updated_at = ?5
              WHERE uid = ?6",
             rusqlite::params![new_content, new_type, new_tags_json, new_imp, now, uid],
         )?;
