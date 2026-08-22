@@ -933,7 +933,13 @@ fn parse_one_file(
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let file_path_str = path.to_string_lossy().to_string();
     for chunk in chunks {
-        let uid = format!("{project_id}::{}::{}", pf.rel, chunk.start_line);
+        // Include the end line: minified/bundled files routinely declare many
+        // functions on one physical line, so start_line alone collides (#562).
+        // collect_chunks dedupes exact (start, end) spans, making this unique.
+        let uid = format!(
+            "{project_id}::{}::{}-{}",
+            pf.rel, chunk.start_line, chunk.end_line
+        );
         pf.chunks.push(PendingChunk {
             uid,
             code: chunk.code,
@@ -1494,5 +1500,36 @@ mod tests {
             "fts row not updated to new content: {}",
             fts_contents[0]
         );
+    }
+
+    #[test]
+    fn chunk_uids_stay_unique_when_declarations_share_a_start_line() {
+        // Minified/bundled JS declares many functions on one physical line.
+        // Two declarations starting on line 1 with different end lines must
+        // not produce colliding uids (#562) — a duplicate uid aborts the
+        // ingest INSERT with a UNIQUE constraint violation.
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-ingest-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("bundled.js");
+        std::fs::write(&file, "function a() {} function b() {\n  return 2;\n}\n").unwrap();
+
+        let pf = parse_one_file("proj", &dir, &file, &HashMap::new());
+        assert!(pf.error.is_none(), "error: {:?}", pf.error);
+
+        let starts: Vec<_> = pf.chunks.iter().filter(|c| c.start_line == 1).collect();
+        assert!(
+            starts.len() >= 2,
+            "expected two declarations starting on line 1, got {:?}",
+            pf.chunks
+                .iter()
+                .map(|c| (c.start_line, c.end_line))
+                .collect::<Vec<_>>()
+        );
+        let mut uids: Vec<_> = pf.chunks.iter().map(|c| c.uid.as_str()).collect();
+        uids.sort_unstable();
+        let n = uids.len();
+        uids.dedup();
+        assert_eq!(uids.len(), n, "duplicate chunk uids: {:?}", uids);
     }
 }
