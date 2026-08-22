@@ -718,9 +718,28 @@ fn flush_chunk_insert(
     total_chunks: usize,
     now: i64,
 ) -> BiResult<()> {
+    // Collect uids first, deduped but in insertion order. The explicit
+    // DELETE below is required because `INSERT OR REPLACE` removes old rows
+    // without firing the memories_ad trigger (recursive_triggers is OFF),
+    // which would leave stale duplicate rows in memories_fts forever.
+    let mut uids: Vec<&str> = Vec::with_capacity(total_chunks);
+    let mut seen = HashSet::new();
+    for pf in batch {
+        for c in &pf.chunks {
+            if seen.insert(c.uid.as_str()) {
+                uids.push(&c.uid);
+            }
+        }
+    }
+    for group in uids.chunks(500) {
+        let placeholders = vec!["?"; group.len()].join(",");
+        let sql = format!("DELETE FROM memories WHERE uid IN ({placeholders})");
+        tx.prepare_cached(&sql)?
+            .execute(rusqlite::params_from_iter(group.iter()))?;
+    }
     let placeholders = vec!["(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"; total_chunks].join(",");
     let sql = format!(
-        "INSERT OR REPLACE INTO memories
+        "INSERT INTO memories
            (uid, project_id, mem_type, content, importance,
             created_at, updated_at, last_access, access_count,
             file_path, start_line, end_line, language, tags, source_agent)
@@ -1402,5 +1421,78 @@ mod tests {
                 "chunk query failed to compile for {lang}"
             );
         }
+    }
+
+    #[test]
+    fn flush_chunk_insert_replaces_fts_rows_for_same_uid() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init_schema(&conn).unwrap();
+        let uid = "proj::chunk::sample.rs::1";
+
+        // memories.project_id has a FOREIGN KEY into projects — seed a row.
+        conn.execute(
+            "INSERT INTO projects(id, name, created_at, updated_at)
+             VALUES('proj', 'proj', 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let mk_pf = |content: &str| ParsedFile {
+            rel: "sample.rs".to_string(),
+            file_uid: "proj::file::sample.rs".to_string(),
+            lang: "rust",
+            bytes: 10,
+            file_hash: String::new(),
+            chunks: vec![PendingChunk {
+                uid: uid.to_string(),
+                code: content.to_string(),
+                file_path: "sample.rs".to_string(),
+                start_line: 1,
+                end_line: 2,
+                language: "rust".to_string(),
+                file_uid: "proj::file::sample.rs".to_string(),
+            }],
+            imports: Vec::new(),
+            error: None,
+        };
+
+        let pf = mk_pf("OLD SECRET");
+        let tx = conn.unchecked_transaction().unwrap();
+        flush_chunk_insert(&tx, "proj", &[&pf], 1, 1000).unwrap();
+        tx.commit().unwrap();
+
+        let pf = mk_pf("NEW SAFE");
+        let tx = conn.unchecked_transaction().unwrap();
+        flush_chunk_insert(&tx, "proj", &[&pf], 1, 2000).unwrap();
+        tx.commit().unwrap();
+
+        let n_memories: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories WHERE uid = ?", [uid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n_memories, 1, "memories must hold exactly one row per uid");
+
+        let fts_contents: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT content FROM memories_fts WHERE uid = ?")
+                .unwrap();
+            let rows = stmt
+                .query_map([uid], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        assert_eq!(
+            fts_contents.len(),
+            1,
+            "stale fts rows for a replaced uid leaked: {fts_contents:?}"
+        );
+        assert!(
+            fts_contents[0].contains("NEW SAFE"),
+            "fts row not updated to new content: {}",
+            fts_contents[0]
+        );
     }
 }
