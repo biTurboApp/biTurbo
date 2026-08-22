@@ -1,0 +1,48 @@
+# biTurbo ignore file
+# Patterns use gitignore syntax and are applied only by biTurbo ingest.
+# This file was created from .gitignore on first ingest.
+# Add files/folders here that should remain in git but stay out of semantic memory.
+
+# --- copied from .gitignore ---
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Build artifacts
+tsconfig.tsbuildinfo
+tsconfig.node.tsbuildinfo
+vite.config.d.ts
+vite.config.js
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# biTurbo data dir (local app data)
+.biturbo/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.tv
+*.tvim

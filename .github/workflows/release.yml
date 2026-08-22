@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: "--bundles nsis"
+          - label: macOS ARM
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+          - label: macOS Intel
+            runner: macos-latest
+            target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build MCP sidecar binary
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          # Create placeholder so Tauri's build.rs externalBin check passes.
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            echo placeholder > "src-tauri/binaries/biturbo-mcp-${{ matrix.target }}.exe"
+          else
+            echo placeholder > "src-tauri/binaries/biturbo-mcp-${{ matrix.target }}"
+          fi
+          cargo build --manifest-path src-tauri/Cargo.toml \
+            --bin biturbo-mcp --release --target ${{ matrix.target }}
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            cp "src-tauri/target/${{ matrix.target }}/release/biturbo-mcp.exe" \
+               "src-tauri/binaries/biturbo-mcp-${{ matrix.target }}.exe"
+          else
+            cp "src-tauri/target/${{ matrix.target }}/release/biturbo-mcp" \
+               "src-tauri/binaries/biturbo-mcp-${{ matrix.target }}"
+          fi
+
+      - name: Determine signing strategy
+        id: signing
+        shell: bash
+        env:
+          HAS_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          IS_MAC: ${{ matrix.runner == 'macos-latest' }}
+        run: |
+          if [ "$IS_MAC" = "true" ] && [ -n "$HAS_CERT" ]; then
+            echo "should_sign=true" >> "$GITHUB_OUTPUT"
+            echo "sign_args=" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_sign=false" >> "$GITHUB_OUTPUT"
+            if [ "$IS_MAC" = "true" ]; then
+              echo "sign_args= --no-sign" >> "$GITHUB_OUTPUT"
+            else
+              echo "sign_args=" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Import Apple Developer Certificate
+        if: steps.signing.outputs.should_sign == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
+          CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+          echo "Certificate imported: $CERT_ID"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "biTurbo ${{ github.ref_name }}"
+          releaseBody: "See the assets to download this version and install."
+          releaseDraft: true
+          prerelease: false
+          tauriScript: npm run tauri
+          args: ${{ matrix.args }}${{ steps.signing.outputs.sign_args }}

@@ -1,10 +1,10 @@
 [package]
 name = "biturbo"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first memory layer for AI coding agents. turbovec + Tauri 2 + MCP."
 authors = ["you"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.90"
 default-run = "biturbo"
 
 [[bin]]
@@ -28,6 +28,8 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -37,10 +39,11 @@ tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 
 # Storage
-rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.31", features = ["bundled", "chrono", "backup"] }
 parking_lot = "0.12"
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
+fs2 = "0.4"
 
 # Vector index
 turbovec = "0.8"
@@ -48,10 +51,11 @@ ndarray = "0.16"
 
 # Embeddings
 fastembed = "4"
-ort = "2.0.0-rc.9"
+# Direct dep so we can enable `cuda` via the `cuda` crate feature below.
+ort = { version = "2.0.0-rc.9" }
 
-# MCP — using hand-rolled JSON-RPC for stability; rmcp deps kept off for now.
-# rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+# MCP — using hand-rolled stdio JSON-RPC for stability.
+# Keep SDK deps out of the binary until the public MCP surface needs them.
 
 # Tree-sitter (project indexing)
 tree-sitter = "0.25"
@@ -64,13 +68,19 @@ tree-sitter-swift = "0.7"
 tree-sitter-php = "0.24"
 tree-sitter-ruby = "0.23"
 tree-sitter-java = "0.23"
-tree-sitter-kotlin = "0.3"
+tree-sitter-kotlin-ng = "1.1"
 tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
 tree-sitter-c-sharp = "0.23"
 tree-sitter-bash = "0.25"
 tree-sitter-html = "0.23"
 tree-sitter-css = "0.25"
+tree-sitter-sequel = "0.3"
+tree-sitter-dart-orchard = "0.5"
+tree-sitter-lua = "0.5"
+tree-sitter-scala = "0.26"
+tree-sitter-r = "1.3"
+tree-sitter-powershell = "0.26"
 
 # Utilities
 rayon = "1"
@@ -94,6 +104,11 @@ hex = "0.4"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# ONNX Runtime CUDA EP for embeddings (needs CUDA ≥12.8 or ≥13.2 + cuDNN ≥9.19 on PATH).
+# Build: cargo build --features cuda
+# Prefer GPU with fallback: BITURBO_EMBED_EP=auto (default when feature enabled)
+# Force: BITURBO_EMBED_EP=cuda | cpu
+cuda = ["ort/cuda"]
 
 [profile.release]
 panic = "abort"

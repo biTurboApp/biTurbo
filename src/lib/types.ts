@@ -31,6 +31,22 @@ export interface MemoryWithScore extends Memory {
   score: number;
 }
 
+export interface RecallExplanation {
+  vector_rank: number | null;
+  fts_rank: number | null;
+  matched_terms: string[];
+  feedback_boost: number;
+}
+
+export interface ExplainedMemory extends MemoryWithScore {
+  explanation: RecallExplanation;
+}
+
+export interface RecallResponse {
+  recall_id: string;
+  results: ExplainedMemory[];
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -111,6 +127,24 @@ export interface IngestError {
   job_id: string;
   project_id: string;
   error: string;
+}
+
+export interface Operation {
+  id: string;
+  kind: string;
+  project_id: string | null;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  phase: string | null;
+  current: number;
+  total: number;
+  checkpoint: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  cancel_requested: boolean;
+  created_at: number;
+  updated_at: number;
+  started_at: number | null;
+  finished_at: number | null;
 }
 
 export interface ConsolidateReport {

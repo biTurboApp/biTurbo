@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useApp } from "./lib/store";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -15,40 +15,39 @@ import { ContextMenuHost } from "./components/ContextMenu";
 
 export default function App() {
   const view = useApp((s) => s.view);
-  const refreshProjects = useApp((s) => s.refreshProjects);
-  const refreshStats = useApp((s) => s.refreshStats);
-  const refreshActivity = useApp((s) => s.refreshActivity);
-  const refreshAgents = useApp((s) => s.refreshAgents);
-  const refreshMemories = useApp((s) => s.refreshMemories);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const [ready, setReady] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
 
-  const refreshGraph = useApp((s) => s.refreshGraph);
+  const bootstrapOnce = useApp((s) => s.bootstrapOnce);
+  const refreshMemories = useApp((s) => s.refreshMemories);
   const refreshTags = useApp((s) => s.refreshTags);
+  const refreshGraph = useApp((s) => s.refreshGraph);
+
+  // Single batched IPC call on mount — replaces 7 sequential calls.
+  const boot = useCallback(async () => {
+    setReady(false);
+    setBootError(null);
+    try {
+      await bootstrapOnce();
+    } catch (e) {
+      setBootError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReady(true);
+    }
+  }, [bootstrapOnce]);
 
   useEffect(() => {
-    (async () => {
-      try {
-        await refreshProjects();
-        await refreshStats();
-        await refreshActivity();
-        await refreshAgents();
-        await refreshMemories();
-        await refreshTags().catch(() => {});
-        await refreshGraph().catch(() => {});
-        setReady(true);
-      } catch (e) {
-        console.error("init failed", e);
-        setReady(true);
-      }
-    })();
-  }, [refreshProjects, refreshStats, refreshActivity, refreshAgents, refreshMemories, refreshTags, refreshGraph]);
+    void boot();
+  }, [boot]);
 
+  // Re-fetch project-scoped data when the active project changes.
   useEffect(() => {
+    if (!ready) return;
     refreshMemories();
     refreshTags().catch(() => {});
     refreshGraph().catch(() => {});
-  }, [currentProjectId, refreshMemories, refreshTags, refreshGraph]);
+  }, [currentProjectId, ready, refreshMemories, refreshTags, refreshGraph]);
 
   // Global keyboard
   useEffect(() => {
@@ -70,8 +69,37 @@ export default function App() {
 
   if (!ready) {
     return (
-      <div className="flex h-screen items-center justify-center text-text-muted">
-        Loading biTurbo…
+      <div className="flex h-screen flex-col items-center justify-center gap-4">
+        <img src="/logo.png" alt="biTurbo" className="h-14 w-14 animate-pulse object-cover" />
+        <div className="font-serif text-lg text-text">biTurbo</div>
+        <div
+          className="h-1 w-32 overflow-hidden rounded-full bg-surface-2"
+          role="progressbar"
+          aria-label="Loading biTurbo"
+        >
+          <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+        </div>
+        <div className="text-xs text-text-muted">Loading your memory layer…</div>
+      </div>
+    );
+  }
+
+  if (bootError) {
+    return (
+      <div className="flex h-screen items-center justify-center p-8">
+        <div className="card w-full max-w-md p-6 text-center">
+          <div className="font-serif text-lg text-text">biTurbo could not load your data</div>
+          <p className="mt-2 text-sm text-text-muted">
+            The local database did not respond. Your memories are safe on disk — retry, or
+            check the log file in the data folder if this keeps happening.
+          </p>
+          <pre className="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-2 p-3 text-left font-mono text-xs text-text-muted">
+            {bootError}
+          </pre>
+          <button onClick={() => void boot()} className="btn-primary mt-4">
+            Retry
+          </button>
+        </div>
       </div>
     );
   }

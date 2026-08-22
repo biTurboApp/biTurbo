@@ -14,9 +14,11 @@ pub struct ConsolidateReport {
 }
 
 pub fn consolidate(state: &AppState, project_id: Option<&str>) -> BiResult<ConsolidateReport> {
-    let mut report = ConsolidateReport::default();
-
-    report.decayed = apply_decay(state, project_id)?;
+    let decayed = apply_decay(state, project_id)?;
+    let mut report = ConsolidateReport {
+        decayed,
+        ..Default::default()
+    };
     let dupes = find_duplicates(state, project_id)?;
     report.duplicates_found = dupes.len();
     for (keep_uid, drop_uid) in dupes {
@@ -193,7 +195,7 @@ fn find_duplicates(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(
             let by_uid: std::collections::HashMap<&str, &(String, String, f64)> =
                 rows.iter().map(|r| (r.0.as_str(), r)).collect();
             let texts: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
-            let embeddings = state.embedder.embed_batch(&texts)?;
+            let embeddings = state.embedder_for_project(&pid)?.embed_batch(&texts)?;
             for (i, vec) in embeddings.iter().enumerate() {
                 let a = &rows[i];
                 let hits = idx.search(vec, 5, None)?;

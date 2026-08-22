@@ -316,6 +316,35 @@ impl ProjectIndex {
         self.inner.lock().uid_to_extid.contains_key(uid)
     }
 
+    pub fn uid_digest(&self) -> String {
+        let inner = self.inner.lock();
+        let mut uids: Vec<&str> = inner.uid_to_extid.keys().map(String::as_str).collect();
+        uids.sort_unstable();
+        let mut hasher = sha2::Sha256::new();
+        use sha2::Digest;
+        for uid in uids {
+            hasher.update(uid.as_bytes());
+            hasher.update([0]);
+        }
+        hex::encode(hasher.finalize())
+    }
+
+    pub fn replace_all(&self, items: &[(String, Vec<f32>)]) -> BiResult<()> {
+        {
+            let mut inner = self.inner.lock();
+            *inner = Inner {
+                index: IdMapIndex::new(self.dim, self.bit_width)
+                    .map_err(|e| BiError::Index(format!("new replacement index: {e}")))?,
+                uid_to_extid: HashMap::new(),
+                extid_to_uid: HashMap::new(),
+                next_extid: 1,
+            };
+        }
+        self.mark_dirty();
+        self.add_batch(items)?;
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

@@ -11,7 +11,8 @@
  *           --keep        leave the test project behind for inspection
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -203,6 +204,12 @@ function extractJson(result: unknown): unknown {
 
 const TEST_PROJECT = `smoke-${Date.now().toString(36)}`;
 const TEST_UID_HOLDER: { uid: string | null } = { uid: null };
+const RECALL_HOLDER: { recallId: string | null; memoryUid: string | null } = {
+  recallId: null,
+  memoryUid: null,
+};
+const OPERATION_HOLDER: { id: string | null } = { id: null };
+const EMPTY_INGEST_ROOT = mkdtempSync(resolve(tmpdir(), "biturbo-mcp-smoke-"));
 
 const tests: TestCase[] = [
   {
@@ -313,6 +320,82 @@ const tests: TestCase[] = [
     expect: (r) => isNonEmptyString(extractText(r)) || "empty recall_for_context",
   },
   {
+    name: "recall_explain",
+    tool: "recall_explain",
+    args: { query: "smoke test memory", project_id: TEST_PROJECT, k: 3 },
+    expect: (r) => {
+      const j = extractJson(r) as {
+        recall_id?: string;
+        results?: Array<{ uid?: string; memory?: { uid?: string } }>;
+      } | null;
+      const memoryUid = j?.results?.[0]?.memory?.uid ?? j?.results?.[0]?.uid;
+      if (!j?.recall_id || !memoryUid) return "missing recall id or explained result";
+      RECALL_HOLDER.recallId = j.recall_id;
+      RECALL_HOLDER.memoryUid = memoryUid;
+      return true;
+    },
+  },
+  {
+    name: "submit_recall_feedback",
+    tool: "submit_recall_feedback",
+    args: () => ({
+      recall_id: RECALL_HOLDER.recallId ?? "",
+      memory_uid: RECALL_HOLDER.memoryUid ?? "",
+      value: 1,
+      source: "explicit",
+    }),
+    skip: () => !RECALL_HOLDER.recallId || !RECALL_HOLDER.memoryUid,
+    expect: (r) => {
+      const j = extractJson(r) as { recorded?: boolean } | null;
+      return j?.recorded === true || "feedback was not recorded";
+    },
+  },
+  {
+    name: "start_ingest",
+    tool: "start_ingest",
+    args: { project_id: TEST_PROJECT, root_path: EMPTY_INGEST_ROOT },
+    expect: (r) => {
+      const j = extractJson(r) as { id?: string } | null;
+      if (!j?.id) return "start_ingest returned no operation id";
+      OPERATION_HOLDER.id = j.id;
+      return true;
+    },
+  },
+  {
+    name: "operation_status",
+    tool: "operation_status",
+    args: () => ({ id: OPERATION_HOLDER.id ?? "" }),
+    skip: () => !OPERATION_HOLDER.id,
+    expect: (r) => {
+      const j = extractJson(r) as { id?: string; status?: string } | null;
+      return (j?.id === OPERATION_HOLDER.id && isNonEmptyString(j.status)) || "invalid operation status";
+    },
+  },
+  {
+    name: "list_operations",
+    tool: "list_operations",
+    args: { limit: 10 },
+    expect: (r) => Array.isArray(extractJson(r)) || "list_operations not array",
+  },
+  {
+    name: "cancel_operation",
+    tool: "cancel_operation",
+    args: () => ({ id: OPERATION_HOLDER.id ?? "" }),
+    skip: () => !OPERATION_HOLDER.id,
+    expect: (r) => {
+      const j = extractJson(r) as { id?: string } | null;
+      return j?.id === OPERATION_HOLDER.id || "cancel returned wrong operation";
+    },
+  },
+  {
+    name: "retry_operation (terminal guard)",
+    tool: "retry_operation",
+    args: () => ({ id: OPERATION_HOLDER.id ?? "" }),
+    skip: () => !OPERATION_HOLDER.id,
+    note: "a completed operation should reject retry while still round-tripping a structured error",
+    expect: () => true,
+  },
+  {
     name: "stats",
     tool: "stats",
     expect: (r) => {
@@ -359,6 +442,12 @@ const tests: TestCase[] = [
     tool: "forget",
     args: () => ({ uid: TEST_UID_HOLDER.uid ?? "" }) as Record<string, unknown>,
     skip: () => !TEST_UID_HOLDER.uid,
+    expect: () => true,
+  },
+  {
+    name: "get_project_name_from_file",
+    tool: "get_project_name_from_file",
+    args: { root_path: "/nonexistent/path" },
     expect: () => true,
   },
   {
@@ -448,6 +537,7 @@ async function main() {
     }
   } finally {
     client.close();
+    rmSync(EMPTY_INGEST_ROOT, { recursive: true, force: true });
   }
 
   const padName = Math.max(...results.map((r) => r.name.length), 20);

@@ -42,6 +42,56 @@
   --success-rgb: 143 184 125;
   --warning-rgb: 212 181 116;
   --danger-rgb: 199 123 110;
+
+  /* Code display (dark) */
+  --code-block-bg: rgb(0 0 0 / 0.3);
+  --code-block-border: var(--border-subtle);
+  --code-block-text: var(--text-muted);
+  --code-chip-bg: rgb(249 115 22 / 0.05);
+  --code-chip-border: rgb(249 115 22 / 0.2);
+  --code-chip-text: rgb(254 215 170 / 0.9);
+  --code-chip-range-bg: rgb(249 115 22 / 0.1);
+  --code-chip-range-text: rgb(254 215 170);
+  --code-chip-lang-border: rgb(249 115 22 / 0.25);
+  --code-chip-lang-text: rgb(254 215 170 / 0.8);
+
+  /* Syntax tokens (dark) */
+  --token-keyword: #c4b5fd;
+  --token-string: #6ee7b7;
+  --token-number: #fcd34d;
+  --token-plain: var(--text-muted);
+  --token-comment: var(--text-dim);
+
+  /* Memory type badges (dark) */
+  --type-fact-color: #7dd3fc;
+  --type-fact-bg: rgb(14 165 233 / 0.1);
+  --type-fact-ring: rgb(14 165 233 / 0.3);
+  --type-fact-dot: #38bdf8;
+  --type-decision-color: #fde047;
+  --type-decision-bg: rgb(245 158 11 / 0.1);
+  --type-decision-ring: rgb(245 158 11 / 0.3);
+  --type-decision-dot: #fbbf24;
+  --type-preference-color: #c4b5fd;
+  --type-preference-bg: rgb(139 92 246 / 0.1);
+  --type-preference-ring: rgb(139 92 246 / 0.3);
+  --type-preference-dot: #a78bfa;
+  --type-pattern-color: #6ee7b7;
+  --type-pattern-bg: rgb(16 185 129 / 0.1);
+  --type-pattern-ring: rgb(16 185 129 / 0.3);
+  --type-pattern-dot: #34d399;
+  --type-episode-color: #fda4af;
+  --type-episode-bg: rgb(244 63 94 / 0.1);
+  --type-episode-ring: rgb(244 63 94 / 0.3);
+  --type-episode-dot: #fb7185;
+  --type-reflection-color: #a5b4fc;
+  --type-reflection-bg: rgb(99 102 241 / 0.1);
+  --type-reflection-ring: rgb(99 102 241 / 0.3);
+  --type-reflection-dot: #818cf8;
+  --type-code-color: #fdba74;
+  --type-code-bg: rgb(249 115 22 / 0.1);
+  --type-code-ring: rgb(249 115 22 / 0.3);
+  --type-code-dot: #fb923c;
+
   color-scheme: dark;
 }
 
@@ -80,6 +130,56 @@
   --success-rgb: 79 127 61;
   --warning-rgb: 156 126 42;
   --danger-rgb: 176 85 73;
+
+  /* Code display (light) */
+  --code-block-bg: rgb(31 27 22 / 0.06);
+  --code-block-border: var(--border-subtle);
+  --code-block-text: var(--text-muted);
+  --code-chip-bg: rgb(249 115 22 / 0.08);
+  --code-chip-border: rgb(249 115 22 / 0.3);
+  --code-chip-text: rgb(154 52 18 / 0.95);
+  --code-chip-range-bg: rgb(249 115 22 / 0.12);
+  --code-chip-range-text: rgb(154 52 18);
+  --code-chip-lang-border: rgb(249 115 22 / 0.35);
+  --code-chip-lang-text: rgb(154 52 18 / 0.9);
+
+  /* Syntax tokens (light) */
+  --token-keyword: #7c3aed;
+  --token-string: #047857;
+  --token-number: #b45309;
+  --token-plain: var(--text-muted);
+  --token-comment: var(--text-dim);
+
+  /* Memory type badges (light) */
+  --type-fact-color: #0369a1;
+  --type-fact-bg: rgb(14 165 233 / 0.12);
+  --type-fact-ring: rgb(14 165 233 / 0.3);
+  --type-fact-dot: #0ea5e9;
+  --type-decision-color: #92400e;
+  --type-decision-bg: rgb(245 158 11 / 0.12);
+  --type-decision-ring: rgb(245 158 11 / 0.3);
+  --type-decision-dot: #d97706;
+  --type-preference-color: #6d28d9;
+  --type-preference-bg: rgb(139 92 246 / 0.12);
+  --type-preference-ring: rgb(139 92 246 / 0.3);
+  --type-preference-dot: #8b5cf6;
+  --type-pattern-color: #047857;
+  --type-pattern-bg: rgb(16 185 129 / 0.12);
+  --type-pattern-ring: rgb(16 185 129 / 0.3);
+  --type-pattern-dot: #10b981;
+  --type-episode-color: #be123c;
+  --type-episode-bg: rgb(244 63 94 / 0.12);
+  --type-episode-ring: rgb(244 63 94 / 0.3);
+  --type-episode-dot: #f43f5e;
+  --type-reflection-color: #3730a3;
+  --type-reflection-bg: rgb(99 102 241 / 0.12);
+  --type-reflection-ring: rgb(99 102 241 / 0.3);
+  --type-reflection-dot: #6366f1;
+  --type-code-color: #9a3412;
+  --type-code-bg: rgb(249 115 22 / 0.12);
+  --type-code-ring: rgb(249 115 22 / 0.3);
+  --type-code-dot: #f97316;
+
   color-scheme: light;
 }
 
@@ -104,6 +204,17 @@
   ::selection {
     background: var(--selection-bg);
     color: var(--selection-fg);
+  }
+
+  /* Keyboard focus indicator — visible only for keyboard navigation
+     (:focus-visible), so mouse clicks don't show outlines. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  /* Inputs keep their softer ring; suppress the outline double-up. */
+  .input:focus-visible {
+    outline: none;
   }
 
   /* Custom scrollbar */
@@ -164,6 +275,45 @@
   }
   .memory-card.active {
     @apply border-accent/40 bg-accent-soft;
+  }
+
+  .code-chip {
+    @apply flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-md px-2 py-1
+           font-mono text-[11.5px] leading-relaxed;
+    background: var(--code-chip-bg);
+    border: 1px solid var(--code-chip-border);
+    color: var(--code-chip-text);
+  }
+  .code-chip-path {
+    @apply min-w-0 break-all;
+  }
+  .code-chip-range {
+    @apply shrink-0 rounded px-1 py-px;
+    background: var(--code-chip-range-bg);
+    border: 1px solid var(--code-chip-border);
+    color: var(--code-chip-range-text);
+  }
+  .code-chip-lang {
+    @apply ml-auto shrink-0 rounded px-1.5 py-0.5 uppercase tracking-wider;
+    background: var(--code-chip-range-bg);
+    border: 1px solid var(--code-chip-lang-border);
+    color: var(--code-chip-lang-text);
+  }
+
+  .code-block {
+    @apply overflow-hidden rounded-md px-2.5 py-2 font-mono text-[11.5px] leading-relaxed;
+    background: var(--code-block-bg);
+    border: 1px solid var(--code-block-border);
+    color: var(--code-block-text);
+  }
+  .code-block-line {
+    @apply whitespace-pre truncate;
+  }
+  .code-block-line.wrap {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    overflow: visible;
+    text-overflow: clip;
   }
 }
 

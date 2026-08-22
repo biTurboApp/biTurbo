@@ -2,9 +2,34 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>biTurbo — Memory Layer</title>
+    <script>
+      // Apply persisted WSL/UI zoom before paint (WebKitGTK ignores CSS zoom).
+      (function () {
+        try {
+          var z = localStorage.getItem("biturbo.uiZoom");
+          var n = Number(z);
+          if (!isFinite(n) || n <= 0 || n === 1) return;
+          document.documentElement.style.setProperty("--biturbo-ui-zoom", String(n));
+          document.documentElement.dataset.uiZoom = String(n);
+        } catch (_) {}
+      })();
+    </script>
+    <style>
+      /* Prefer transform over CSS zoom — WebKitGTK under WSL ignores `zoom`.
+         Isolate the scaled layer so infinite child animations (if any) don't
+         force full-document paint every frame. */
+      html[data-ui-zoom] #root {
+        transform: scale(var(--biturbo-ui-zoom, 1));
+        transform-origin: 0 0;
+        width: calc(100vw / var(--biturbo-ui-zoom, 1));
+        min-height: calc(100vh / var(--biturbo-ui-zoom, 1));
+        will-change: transform;
+        contain: layout paint;
+      }
+    </style>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

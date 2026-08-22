@@ -1,28 +1,56 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Memory } from "../lib/types";
-import { MEM_TYPE_META, timeAgo, shortDate, importanceDots } from "../lib/format";
+import { MEM_TYPE_META, timeAgo, shortDate, importanceDots, truncatePath, stripLeadingPathComment, friendlyError } from "../lib/format";
 import { api } from "../lib/api";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { useApp, useConfirm } from "../lib/store";
-import { X, Trash2, Edit3, Save, FileCode2, Hash } from "lucide-react";
+import { X, Trash2, Edit3, Save, FileCode2, Hash, ChevronDown, ChevronUp } from "lucide-react";
 import clsx from "clsx";
+import { CodeBlock } from "./CodeBlock";
 
 export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () => void }) {
   const [editing, setEditing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState(memory.content);
   const [draftTags, setDraftTags] = useState(memory.tags.join(", "));
   const [draftImp, setDraftImp] = useState(memory.importance);
   const [related, setRelated] = useState<{ uid: string; content: string; score: number }[]>([]);
+  // Per-uid draft cache: switching memories mid-edit preserves unsaved
+  // changes instead of silently discarding them.
+  const draftCache = useRef(new Map<string, { content: string; tags: string; imp: number }>());
+  const baselineCache = useRef(new Map<string, { content: string; tags: string; imp: number }>());
+  const prevUidRef = useRef(memory.uid);
   const refreshMemories = useApp((s) => s.refreshMemories);
+  const refreshTags = useApp((s) => s.refreshTags);
   const refreshStats = useApp((s) => s.refreshStats);
   const showToast = useApp((s) => s.showToast);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
+  const selectMemoryByUid = useApp((s) => s.selectMemoryByUid);
   const confirm = useConfirm();
 
   useEffect(() => {
-    setDraft(memory.content);
-    setDraftTags(memory.tags.join(", "));
-    setDraftImp(memory.importance);
+    baselineCache.current.set(memory.uid, {
+      content: memory.content,
+      tags: memory.tags.join(", "),
+      imp: memory.importance,
+    });
+    const prevUid = prevUidRef.current;
+    if (prevUid === memory.uid) return;
+    const base = baselineCache.current.get(prevUid);
+    const wasDirty =
+      base != null &&
+      (draft !== base.content || draftTags !== base.tags || draftImp !== base.imp);
+    if (wasDirty) {
+      draftCache.current.set(prevUid, { content: draft, tags: draftTags, imp: draftImp });
+      showToast({ kind: "info", text: "Unsaved edits kept as draft" });
+    }
+    const saved = draftCache.current.get(memory.uid);
+    setDraft(saved ? saved.content : memory.content);
+    setDraftTags(saved ? saved.tags : memory.tags.join(", "));
+    setDraftImp(saved ? saved.imp : memory.importance);
     setEditing(false);
+    setExpanded(false);
+    prevUidRef.current = memory.uid;
   }, [memory.uid]);
 
   useEffect(() => {
@@ -43,7 +71,8 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
         /* ignore */
       }
     })();
-  }, [memory.uid, memory.project_id, memory.content]);
+    // Only re-search when selecting a different memory, not on every edit.
+  }, [memory.uid, memory.project_id]);
 
   async function save() {
     try {
@@ -59,7 +88,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
       showToast({ kind: "ok", text: "Saved" });
       setEditing(false);
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -73,15 +102,32 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
     try {
       await api.forget(memory.uid);
       setSelected(null);
+      await refreshTags();
       await Promise.all([refreshMemories(), refreshStats()]);
       showToast({ kind: "ok", text: "Forgotten" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
   const meta = MEM_TYPE_META[memory.mem_type] ?? MEM_TYPE_META.fact;
   const dots = importanceDots(memory.importance);
+  const isCode = memory.mem_type === "code";
+  const bodyContent = isCode
+    ? stripLeadingPathComment(memory.content, memory.file_path)
+    : memory.content;
+  const CODE_COLLAPSE_LINES = 14;
+  const TEXT_COLLAPSE_CHARS = 220;
+  const TEXT_COLLAPSE_LINES = 8;
+  const isCollapsible = isCode
+    ? bodyContent.split("\n").length > CODE_COLLAPSE_LINES
+    : bodyContent.length > TEXT_COLLAPSE_CHARS || bodyContent.split("\n").length > TEXT_COLLAPSE_LINES;
+  const collapsed = isCollapsible && !expanded;
+  const dirty =
+    editing &&
+    (draft !== memory.content ||
+      draftTags !== memory.tags.join(", ") ||
+      draftImp !== memory.importance);
 
   return (
     <div className="flex h-full flex-col">
@@ -104,7 +150,7 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
             </span>
           </div>
         </div>
-        <button onClick={onClose} className="btn-ghost p-1.5">
+        <button onClick={onClose} className="btn-ghost p-1.5" aria-label="Close details" title="Close">
           <X size={14} />
         </button>
       </div>
@@ -115,29 +161,75 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                void save();
+              }
+            }}
             rows={8}
             className="input resize-none font-sans text-sm"
             autoFocus
           />
-        ) : (
-          <div className="whitespace-pre-wrap text-sm leading-relaxed text-text text-pretty">
-            {memory.content}
+        ) : isCode ? (
+          <div className="relative">
+            <CodeBlock code={bodyContent} maxLines={collapsed ? CODE_COLLAPSE_LINES : undefined} />
+            {collapsed && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 rounded-b-md bg-gradient-to-t from-surface to-transparent" />
+            )}
           </div>
+        ) : (
+          <div className="relative">
+            <div
+              className={clsx(
+                "whitespace-pre-wrap text-sm leading-relaxed text-text text-pretty overflow-hidden",
+                collapsed && "max-h-[160px]"
+              )}
+            >
+              {memory.content}
+            </div>
+            {collapsed && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-surface to-transparent" />
+            )}
+          </div>
+        )}
+
+        {!editing && isCollapsible && (
+          <button
+            onClick={() => setExpanded((e) => !e)}
+            className="mt-2 flex items-center gap-1 text-[11px] text-text-dim transition hover:text-text-muted"
+          >
+            {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {expanded ? "Show less" : "Show more"}
+          </button>
         )}
 
         {/* Code location */}
         {memory.mem_type === "code" && memory.file_path && (
-          <div className="mt-3 flex items-center gap-2 rounded-md border border-orange-500/20 bg-orange-500/5 p-2.5 font-mono text-[11px] text-orange-200">
-            <FileCode2 size={12} />
-            <span className="truncate">
-              {memory.file_path}:{memory.start_line}-{memory.end_line}
-            </span>
-            {memory.language && (
-              <span className="ml-auto rounded border border-orange-500/30 px-1.5 py-0.5 text-[10px]">
-                {memory.language}
+          <button
+            type="button"
+            onClick={() => {
+              shellOpen(memory.file_path as string).catch((e) => {
+                showToast({ kind: "err", text: `Could not open file: ${String(e)}` });
+              });
+            }}
+            className="code-chip mt-3 w-full py-1.5 text-left text-[12px] transition hover:border-accent/50"
+            title={`Open ${memory.file_path} in the default app`}
+          >
+            <FileCode2 size={12} className="shrink-0" />
+            <span className="code-chip-path">{truncatePath(memory.file_path, 56)}</span>
+            {memory.start_line && (
+              <span className="code-chip-range">
+                L{memory.start_line}
+                {memory.end_line && memory.end_line !== memory.start_line
+                  ? `\u2013${memory.end_line}`
+                  : ""}
               </span>
             )}
-          </div>
+            {memory.language && (
+              <span className="code-chip-lang">{memory.language}</span>
+            )}
+          </button>
         )}
 
         {/* Tags */}
@@ -223,12 +315,20 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
               {related.map((r) => (
                 <button
                   key={r.uid}
-                  onClick={() => setSelected(r.uid)}
+                  onClick={() => void selectMemoryByUid(r.uid)}
                   className="block w-full rounded-md border border-border-subtle bg-surface p-2 text-left text-[11px] text-text-muted transition hover:border-border hover:bg-surface-2"
                 >
                   <div className="line-clamp-2 text-pretty">{r.content}</div>
-                  <div className="mt-1 font-mono text-[10px] text-text-dim">
-                    score {r.score.toFixed(3)}
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <div className="h-1 w-12 overflow-hidden rounded-full bg-surface-2">
+                      <div
+                        className="h-full bg-accent"
+                        style={{ width: `${Math.round(Math.min(1, Math.max(0, r.score)) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="font-mono text-[10px] text-text-dim">
+                      {Math.round(r.score * 100)}% match
+                    </span>
                   </div>
                 </button>
               ))}
@@ -241,6 +341,11 @@ export function MemoryDetail({ memory, onClose }: { memory: Memory; onClose: () 
       <div className="flex items-center gap-2 border-t border-border-subtle p-3">
         {editing ? (
           <>
+            {dirty && (
+              <span className="text-[10px] uppercase tracking-widest text-warning">
+                Unsaved
+              </span>
+            )}
             <button onClick={save} className="btn-primary flex-1">
               <Save size={14} /> Save
             </button>

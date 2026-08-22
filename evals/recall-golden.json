@@ -1,0 +1,206 @@
+{
+  "version": 1,
+  "description": "Deterministic recall corpus covering code, preferences, stale facts, contradictions, filters, isolation, and empty results.",
+  "project": {
+    "id_prefix": "recall-eval",
+    "name": "Recall Eval Project"
+  },
+  "memories": [
+    {
+      "alias": "mcp_dispatch",
+      "content": "Code fact: MCP tool dispatch is handled in src-tauri/src/mcp.rs inside the dispatch function. It routes tools/call requests to memory, project, ingest, stats, bootstrap, and agent handlers.",
+      "mem_type": "code",
+      "tags": [
+        "mcp",
+        "dispatch",
+        "tools"
+      ],
+      "importance": 0.82,
+      "file_path": "src-tauri/src/mcp.rs",
+      "start_line": 40,
+      "end_line": 180,
+      "language": "rust"
+    },
+    {
+      "alias": "lazy_embedder",
+      "content": "Decision: Embedding model loading should be lazy. Embedder::new should not load the ONNX model during AppState::open; the model should load on first semantic operation to improve cold start and idle RAM.",
+      "mem_type": "decision",
+      "tags": [
+        "embedding",
+        "performance",
+        "startup"
+      ],
+      "importance": 0.9,
+      "file_path": "src-tauri/src/embed.rs",
+      "language": "rust"
+    },
+    {
+      "alias": "biturboignore",
+      "content": "Decision: ingest_project should respect .gitignore and also support .biturboignore for biTurbo-specific exclusions. Hard file-size skipping is too blunt because large files can still be relevant.",
+      "mem_type": "decision",
+      "tags": [
+        "ingest",
+        "ignore",
+        "biturboignore"
+      ],
+      "importance": 0.86,
+      "file_path": "src-tauri/src/ingest.rs",
+      "language": "rust"
+    },
+    {
+      "alias": "concise_pref",
+      "content": "User preference: prefer concise, direct answers. Avoid long preambles unless depth is explicitly requested.",
+      "mem_type": "preference",
+      "tags": [
+        "style",
+        "brevity"
+      ],
+      "importance": 0.78
+    },
+    {
+      "alias": "supersedes_bug",
+      "content": "Bug: remember() previously updated old memories with superseded_by = id, which set the old memory to point to itself instead of the newly inserted memory. Fix by inserting the new row first and then setting old.superseded_by = new_id.",
+      "mem_type": "fact",
+      "tags": [
+        "memory",
+        "supersedes",
+        "bug"
+      ],
+      "importance": 0.84,
+      "file_path": "src-tauri/src/memory.rs",
+      "language": "rust"
+    },
+    {
+      "alias": "ci_frontend_dist",
+      "content": "Build issue: tauri::generate_context! fails if frontendDist is ../dist and pnpm build has not created dist. CI should build the frontend before cargo clippy or cargo test.",
+      "mem_type": "fact",
+      "tags": [
+        "ci",
+        "tauri",
+        "frontendDist"
+      ],
+      "importance": 0.74,
+      "file_path": ".github/workflows/ci.yml",
+      "language": "yaml"
+    },
+    {
+      "alias": "old_database_choice",
+      "content": "Stale fact: the project stores all durable data in a JSON file and does not use SQLite.",
+      "mem_type": "fact",
+      "tags": ["storage", "stale"],
+      "importance": 0.45
+    },
+    {
+      "alias": "current_database_choice",
+      "content": "Current decision: SQLite is the durable source of truth; FTS and turbovec are derived indexes repaired from the mutation journal.",
+      "mem_type": "decision",
+      "tags": ["storage", "sqlite", "reliability"],
+      "importance": 0.95,
+      "supersedes_alias": "old_database_choice"
+    }
+  ],
+  "isolation_probe": {
+    "alias": "isolated_episode",
+    "content": "Semaphore violet belongs only to the isolated project and must never cross project boundaries.",
+    "mem_type": "episode",
+    "tags": ["isolation"],
+    "importance": 0.9
+  },
+  "cases": [
+    {
+      "name": "mcp dispatch location",
+      "query": "where is MCP tool dispatch handled?",
+      "expected_aliases": [
+        "mcp_dispatch"
+      ],
+      "k": 3,
+      "must_include": [
+        "mcp.rs",
+        "dispatch"
+      ]
+    },
+    {
+      "name": "lazy embedding startup decision",
+      "query": "what did we decide about lazy loading embeddings and cold start?",
+      "expected_aliases": [
+        "lazy_embedder"
+      ],
+      "k": 3,
+      "must_include": [
+        "lazy",
+        "cold start"
+      ]
+    },
+    {
+      "name": "ignore rules for ingest",
+      "query": "should ingest skip large files or use biturboignore?",
+      "expected_aliases": [
+        "biturboignore"
+      ],
+      "k": 3,
+      "must_include": [
+        ".biturboignore",
+        ".gitignore"
+      ]
+    },
+    {
+      "name": "user style preference",
+      "query": "how should I answer the user by default?",
+      "expected_aliases": [
+        "concise_pref"
+      ],
+      "k": 3,
+      "must_include": [
+        "concise"
+      ]
+    },
+    {
+      "name": "supersedes linkage bug",
+      "query": "what was wrong with superseded_by in remember?",
+      "expected_aliases": [
+        "supersedes_bug"
+      ],
+      "k": 3,
+      "must_include": [
+        "superseded_by",
+        "new_id"
+      ]
+    },
+    {
+      "name": "tauri frontendDist CI failure",
+      "query": "why does tauri generate_context fail in cargo test?",
+      "expected_aliases": [
+        "ci_frontend_dist"
+      ],
+      "k": 3,
+      "must_include": [
+        "frontendDist",
+        "pnpm build"
+      ]
+    },
+    {
+      "name": "current fact beats stale contradiction",
+      "query": "what is the durable source of truth for storage and indexes?",
+      "expected_aliases": ["current_database_choice"],
+      "must_exclude_aliases": ["old_database_choice"],
+      "k": 3,
+      "must_include": ["SQLite", "mutation journal"]
+    },
+    {
+      "name": "memory type filter",
+      "query": "durable source of truth SQLite",
+      "expected_aliases": ["current_database_choice"],
+      "mem_type": "decision",
+      "k": 3,
+      "must_include": ["SQLite"]
+    },
+    {
+      "name": "project isolation and empty filtered results",
+      "query": "semaphore violet isolated episode",
+      "expected_aliases": [],
+      "mem_type": "episode",
+      "expect_empty": true,
+      "k": 3
+    }
+  ]
+}

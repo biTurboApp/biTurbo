@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp, useConfirm } from "../lib/store";
 import { api } from "../lib/api";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Plus, FolderGit2, Trash2, Database, FileSearch, Loader2, Eye, Download, FileText, Radar } from "lucide-react";
+import { Plus, FolderGit2, Trash2, Database, FileSearch, Loader2, Eye, Download, FileText, Radar, FilePlus2 } from "lucide-react";
 import clsx from "clsx";
 import type { IngestProgress } from "../lib/types";
+import { friendlyError } from "../lib/format";
 
 export function Projects() {
   const projects = useApp((s) => s.projects);
@@ -17,18 +18,44 @@ export function Projects() {
 
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
   const [desc, setDesc] = useState("");
   const [rootPath, setRootPath] = useState("");
   const ingestJobs = useApp((s) => s.ingestJobs);
+  const ingestJobIds = useApp((s) => s.ingestJobIds);
+  const registerIngestJob = useApp((s) => s.registerIngestJob);
   const [busy, setBusy] = useState<string | null>(null);
   const [watchOn, setWatchOn] = useState<Record<string, boolean>>({});
   const [importingFor, setImportingFor] = useState<string | null>(null);
+  const [importErrors, setImportErrors] = useState<{ projectId: string; errors: string[] } | null>(null);
 
   useEffect(() => {
     const next: Record<string, boolean> = {};
     for (const p of projects) next[p.id] = p.watch_enabled;
     setWatchOn(next);
   }, [projects]);
+
+  // The watcher is the source of truth: reconcile badges with its live
+  // status (a watcher may have been stopped externally since boot).
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .watchStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setWatchOn((prev) => {
+          const next = { ...prev };
+          for (const id of Object.keys(next)) next[id] = status.watching.includes(id);
+          return next;
+        });
+      })
+      .catch(() => {
+        /* keep project-list defaults when the watcher is unreachable */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const activeIngest = Object.values(ingestJobs)[0] as IngestProgress | undefined;
 
@@ -38,7 +65,13 @@ export function Projects() {
   }
 
   async function create() {
-    if (!name.trim()) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (projects.some((p) => p.name.toLowerCase() === trimmed.toLowerCase())) {
+      setNameError("A project with this name already exists");
+      return;
+    }
+    setNameError(null);
     setBusy("create");
     try {
       const p = await api.createProject({
@@ -55,7 +88,7 @@ export function Projects() {
       setCurrentProjectId(p.id);
       showToast({ kind: "ok", text: `Created project ${p.name}` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(null);
     }
@@ -67,10 +100,26 @@ export function Projects() {
       return;
     }
     try {
-      await api.ingestProject(projectId, root);
+      const job = await api.ingestProject(projectId, root);
+      registerIngestJob(projectId, job.job_id);
       showToast({ kind: "info", text: `Started indexing ${projectId}…` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
+    }
+  }
+
+  async function cancelIngest() {
+    if (!activeIngest) return;
+    const jobId = ingestJobIds[activeIngest.project_id];
+    if (!jobId) {
+      showToast({ kind: "err", text: "Cannot cancel — job id unknown" });
+      return;
+    }
+    try {
+      await api.cancelOperation(jobId);
+      showToast({ kind: "info", text: "Cancellation requested" });
+    } catch (e) {
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -93,7 +142,7 @@ export function Projects() {
       await refreshStats();
       showToast({ kind: "ok", text: "Deleted" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setBusy(null);
     }
@@ -107,12 +156,20 @@ export function Projects() {
       const r = await api.importFolder(projectId, sel);
       await refreshProjects();
       await refreshStats();
-      showToast({
-        kind: "ok",
-        text: `Imported ${r.files_imported} files · ${r.memories_created} memories${r.errors.length ? ` · ${r.errors.length} errors` : ""}`,
-      });
+      if (r.errors.length > 0) {
+        setImportErrors({ projectId, errors: r.errors });
+        showToast({
+          kind: "info",
+          text: `Imported ${r.files_imported} files · ${r.memories_created} memories · ${r.errors.length} failed — see details`,
+        });
+      } else {
+        showToast({
+          kind: "ok",
+          text: `Imported ${r.files_imported} files · ${r.memories_created} memories`,
+        });
+      }
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     } finally {
       setImportingFor(null);
     }
@@ -129,7 +186,7 @@ export function Projects() {
       const r = await api.exportMemories(projectId, target);
       showToast({ kind: "ok", text: `Exported ${r.memories_written} memories → ${r.output_path}` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -142,23 +199,53 @@ export function Projects() {
         text: enabled ? `Watching ${projectId} (auto-reingest on changes)` : `Stopped watching ${projectId}`,
       });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
-  async function setModel(projectId: string, current: string | null) {
-    const input = prompt(
-      `Embedding model for "${projectId}" (BGE-small-en-v1.5, BGE-base-en-v1.5, BGE-large-en-v1.5, all-MiniLM-L6-v2). Leave empty to clear.`,
-      current ?? ""
-    );
-    if (input === null) return;
-    const model = input.trim() === "" ? null : input.trim();
+  const [repairing, setRepairing] = useState<string | null>(null);
+
+  async function repairMarkerFiles(projectId: string) {
+    setRepairing(projectId);
     try {
-      await api.setProjectEmbedModel(projectId, model);
-      await refreshProjects();
-      showToast({ kind: "ok", text: model ? `Set model to ${model}` : "Cleared model preference" });
+      const r = await api.ensureProjectMarkerFiles(projectId);
+      const root = projects.find((pr) => pr.id === projectId)?.root_path ?? "";
+      showToast({
+        kind: "ok",
+        text: r.created.length
+          ? `Marker files created in ${root || projectId}: ${r.created.join(", ")}`
+          : `Marker files already present in ${root || projectId}`,
+      });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
+    } finally {
+      setRepairing(null);
+    }
+  }
+
+  const [modelEdit, setModelEdit] = useState<{
+    id: string;
+    name: string;
+    current: string | null;
+  } | null>(null);
+  const [modelSaving, setModelSaving] = useState(false);
+
+  async function saveModel(model: string | null) {
+    if (!modelEdit) return;
+    setModelSaving(true);
+    try {
+      await api.setProjectEmbedModel(modelEdit.id, model);
+      await refreshProjects();
+      showToast({
+        kind: "ok",
+        text: model ? `Set model to ${model}` : "Cleared model preference",
+      });
+      setModelEdit(null);
+    } catch (e) {
+conflict://2
+      showToast({ kind: "err", text: friendlyError(e) });
+    } finally {
+      setModelSaving(false);
     }
   }
 
@@ -176,6 +263,21 @@ export function Projects() {
         </button>
       </div>
 
+      {projects.length === 0 && !creating && (
+        <div className="card flex flex-col items-center justify-center p-12 text-center">
+          <FolderGit2 size={28} className="mb-3 text-text-dim" />
+          <div className="font-serif text-lg">No projects yet</div>
+          <p className="mt-1 max-w-md text-sm text-text-muted">
+            Projects isolate memories and the code index per repository. Create your first
+            project, point it at a repo, and run Re-index — then connect an agent via
+            Settings → MCP.
+          </p>
+          <button onClick={() => setCreating(true)} className="btn-primary mt-4">
+            <Plus size={14} /> Create your first project
+          </button>
+        </div>
+      )}
+
       {activeIngest && (
         <div className="card p-4">
           <div className="mb-2 flex items-center gap-2 text-sm">
@@ -192,6 +294,15 @@ export function Projects() {
               <span className="ml-auto font-mono text-xs text-text-muted">
                 {activeIngest.current}/{activeIngest.total} · {activeIngest.chunks_so_far} chunks
               </span>
+            )}
+            {activeIngest.phase !== "done" && (
+              <button
+                onClick={() => void cancelIngest()}
+                className="btn-ghost ml-auto shrink-0 px-2 py-0.5 text-[11px]"
+                title="Request cancellation of this indexing run"
+              >
+                Cancel
+              </button>
             )}
             {activeIngest.phase === "done" && (
               <span className="ml-auto font-mono text-xs text-success">
@@ -215,8 +326,38 @@ export function Projects() {
         </div>
       )}
 
+      {importErrors && (
+        <div className="card border-warning/40 p-4">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-text">
+              Import of {importErrors.projectId} finished with {importErrors.errors.length}{" "}
+              {importErrors.errors.length === 1 ? "error" : "errors"}
+            </span>
+            <button
+              onClick={() => setImportErrors(null)}
+              className="btn-ghost ml-auto px-2 py-0.5 text-[11px]"
+            >
+              Dismiss
+            </button>
+          </div>
+          <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto font-mono text-[11px] text-text-muted">
+            {importErrors.errors.map((err, i) => (
+              <li key={i} className="break-all rounded bg-surface-2 px-2 py-1">
+                {err}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {creating && (
-        <div className="card space-y-3 p-5">
+        <form
+          className="card space-y-3 p-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void create();
+          }}
+        >
           <h3 className="font-serif text-lg">New project</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -225,11 +366,19 @@ export function Projects() {
               </label>
               <input
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setNameError(null);
+                }}
                 placeholder="scout-qa"
                 className="input"
                 autoFocus
               />
+              {nameError && (
+                <p role="alert" className="mt-1 text-xs text-danger">
+                  {nameError}
+                </p>
+              )}
             </div>
             <div>
               <label className="mb-1 block text-[10px] uppercase tracking-widest text-text-dim">
@@ -254,24 +403,24 @@ export function Projects() {
                 placeholder="/Users/you/Code/project"
                 className="input font-mono"
               />
-              <button onClick={pickFolder} className="btn-outline">
+              <button type="button" onClick={pickFolder} className="btn-outline">
                 Browse
               </button>
             </div>
           </div>
           <div className="flex items-center justify-end gap-2 border-t border-border-subtle pt-3">
-            <button onClick={() => setCreating(false)} className="btn-ghost">
+            <button type="button" onClick={() => setCreating(false)} className="btn-ghost">
               Cancel
             </button>
             <button
-              onClick={create}
+              type="submit"
               disabled={!name.trim() || busy === "create"}
               className="btn-primary"
             >
               {busy === "create" ? "Creating…" : "Create"}
             </button>
           </div>
-        </div>
+        </form>
       )}
 
       <div className="grid gap-3">
@@ -325,7 +474,10 @@ export function Projects() {
                       <FileSearch size={11} />
                       <span className="font-mono">{p.indexed_count}</span> code chunks
                     </span>
-                    <span className="font-mono text-[10px] text-text-dim">
+                    <span
+                      className="font-mono text-[10px] text-text-dim"
+                      title={`Embedding dimension ${p.dim}; turbovec stores each vector at ${p.bit_width}-bit quantization (${Math.round(32 / p.bit_width)}× smaller than float32)`}
+                    >
                       dim={p.dim} · {p.bit_width}-bit{p.embed_model ? ` · ${p.embed_model}` : ""}
                     </span>
                     {watchOn[p.id] && (
@@ -333,7 +485,7 @@ export function Projects() {
                         className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-[10px] text-success"
                         title="Watching for changes"
                       >
-                        <Radar size={9} className="animate-pulse" /> watching
+                        <Radar size={9} /> watching
                       </span>
                     )}
                   </div>
@@ -377,6 +529,17 @@ export function Projects() {
                 </button>
                 {p.root_path && (
                   <button
+                    onClick={() => repairMarkerFiles(p.id)}
+                    disabled={repairing === p.id}
+                    className="btn-outline"
+                    title="Creates the marker file agents read to resolve this project (.biTurbo) plus the ignore file, inside this project's root"
+                  >
+                    <FilePlus2 size={12} />
+                    {repairing === p.id ? "Generating…" : "Generate marker files"}
+                  </button>
+                )}
+                {p.root_path && (
+                  <button
                     onClick={() => toggleWatch(p.id, p.root_path, !watchOn[p.id])}
                     className={clsx(
                       "btn-outline",
@@ -384,12 +547,14 @@ export function Projects() {
                     )}
                     title={watchOn[p.id] ? "Stop watching for changes" : "Watch for changes; auto-reingest on file events"}
                   >
-                    <Radar size={12} className={watchOn[p.id] ? "animate-pulse" : ""} />
+                    <Radar size={12} />
                     {watchOn[p.id] ? "Unwatch" : "Watch"}
                   </button>
                 )}
                 <button
-                  onClick={() => setModel(p.id, p.embed_model)}
+                  onClick={() =>
+                    setModelEdit({ id: p.id, name: p.name, current: p.embed_model })
+                  }
                   className="btn-outline"
                   title="Set preferred embedding model for this project"
                 >
@@ -417,6 +582,126 @@ export function Projects() {
             </div>
           );
         })}
+      </div>
+      {modelEdit && (
+        <EmbedModelModal
+          projectId={modelEdit.name}
+          current={modelEdit.current}
+          saving={modelSaving}
+          onSave={saveModel}
+          onClose={() => setModelEdit(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+const EMBED_MODELS = [
+  { id: "BGE-small-en-v1.5", hint: "384 dims · fast, low memory" },
+  { id: "BGE-base-en-v1.5", hint: "768 dims · balanced" },
+  { id: "BGE-large-en-v1.5", hint: "1024 dims · highest quality" },
+  { id: "all-MiniLM-L6-v2", hint: "384 dims · fast" },
+] as const;
+
+function EmbedModelModal({
+  projectId,
+  current,
+  saving,
+  onSave,
+  onClose,
+}: {
+  projectId: string;
+  current: string | null;
+  saving: boolean;
+  onSave: (model: string | null) => void;
+  onClose: () => void;
+}) {
+  const [selected, setSelected] = useState<string | null>(current);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Move focus into the dialog so Escape and screen readers catch it.
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4 backdrop-blur-sm animate-backdrop_in"
+      onClick={() => {
+        if (!saving) onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !saving) onClose();
+      }}
+    >
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="embed-model-title"
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-lg border border-border bg-surface shadow-modal outline-none animate-modal_in"
+      >
+        <div className="border-b border-border-subtle p-5">
+          <h3 id="embed-model-title" className="font-serif text-lg text-text">
+            Embedding model
+          </h3>
+          <p className="mt-1 text-xs text-text-muted">
+            Model used to embed new memories and code chunks for{" "}
+            <span className="font-medium text-text">{projectId}</span>. Changing it applies to
+            the next index run.
+          </p>
+        </div>
+
+        <div className="space-y-1 p-3" role="radiogroup" aria-label="Embedding model">
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-2">
+            <input
+              type="radio"
+              name="embed-model"
+              checked={selected === null}
+              onChange={() => setSelected(null)}
+              className="mt-0.5 accent-accent"
+            />
+            <span>
+              <span className="block text-sm text-text">Project default</span>
+              <span className="block text-[11px] text-text-dim">
+                Clear the override — use the app-wide default
+              </span>
+            </span>
+          </label>
+          {EMBED_MODELS.map((m) => (
+            <label
+              key={m.id}
+              className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-2"
+            >
+              <input
+                type="radio"
+                name="embed-model"
+                checked={selected === m.id}
+                onChange={() => setSelected(m.id)}
+                className="mt-0.5 accent-accent"
+              />
+              <span>
+                <span className="block font-mono text-sm text-text">{m.id}</span>
+                <span className="block text-[11px] text-text-dim">{m.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-5 py-3">
+          <button onClick={onClose} disabled={saving} className="btn-outline">
+            Cancel
+          </button>
+          <button
+            onClick={() => onSave(selected)}
+            disabled={saving || selected === current}
+            className="btn-primary"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
       </div>
     </div>
   );

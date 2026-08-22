@@ -10,10 +10,12 @@ export function Overview() {
   const memories = useApp((s) => s.memories);
   const activity = useApp((s) => s.activity);
   const setView = useApp((s) => s.setView);
+  const setTypeFilter = useApp((s) => s.setTypeFilter);
   const currentProjectId = useApp((s) => s.currentProjectId);
   const setSelected = useApp((s) => s.setSelectedMemoryUid);
   const selectedMemoryUid = useApp((s) => s.selectedMemoryUid);
-
+  const projects = useApp((s) => s.projects);
+  const agents = useApp((s) => s.agents);
   const recent = useMemo(
     () => memories.filter((m) => m.project_id === currentProjectId).slice(0, 6),
     [memories, currentProjectId]
@@ -35,13 +37,13 @@ export function Overview() {
   const typeData = stats?.by_type ?? [];
   const total = Math.max(1, typeData.reduce((a, [, n]) => a + n, 0));
   const typeColors: Record<string, string> = {
-    fact: "bg-sky-400",
-    decision: "bg-amber-400",
-    preference: "bg-violet-400",
-    pattern: "bg-emerald-400",
-    episode: "bg-rose-400",
-    reflection: "bg-indigo-400",
-    code: "bg-orange-400",
+    fact: "bg-[var(--type-fact-dot)]",
+    decision: "bg-[var(--type-decision-dot)]",
+    preference: "bg-[var(--type-preference-dot)]",
+    pattern: "bg-[var(--type-pattern-dot)]",
+    episode: "bg-[var(--type-episode-dot)]",
+    reflection: "bg-[var(--type-reflection-dot)]",
+    code: "bg-[var(--type-code-dot)]",
   };
 
   return (
@@ -59,6 +61,37 @@ export function Overview() {
           Search, browse, and project-isolate what your tools know.
         </p>
       </div>
+
+      {/* First-run onboarding */}
+      {projects.length === 0 && agents.length === 0 && (
+        <div className="card border-accent/30 p-6">
+          <h3 className="font-serif text-lg">Set up biTurbo in three steps</h3>
+          <ol className="mt-3 space-y-2 text-sm text-text-muted">
+            <li className="flex items-start gap-2">
+              <span className="font-mono text-xs text-accent">1</span>
+              <span>
+                Create a project and point it at a repository —{" "}
+                <button onClick={() => setView("projects")} className="text-accent underline underline-offset-2">
+                  go to Projects
+                </button>
+              </span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="font-mono text-xs text-accent">2</span>
+              <span>Run “Re-index code” so agents can search your codebase</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="font-mono text-xs text-accent">3</span>
+              <span>
+                Connect your AI agent via MCP —{" "}
+                <button onClick={() => setView("settings")} className="text-accent underline underline-offset-2">
+                  Settings → one-click install
+                </button>
+              </span>
+            </li>
+          </ol>
+        </div>
+      )}
 
       {/* Stats row */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -111,7 +144,10 @@ export function Overview() {
               return (
                 <button
                   key={t}
-                  onClick={() => setView("memories")}
+                  onClick={() => {
+                    setTypeFilter(t);
+                    setView("memories");
+                  }}
                   className="block w-full text-left transition hover:opacity-80"
                 >
                   <div className="mb-1 flex items-baseline justify-between text-xs">

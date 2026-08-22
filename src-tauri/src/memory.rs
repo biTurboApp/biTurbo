@@ -1,6 +1,7 @@
 use crate::db::log_activity;
 use crate::error::{BiError, BiResult};
 use crate::state::AppState;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +28,7 @@ impl MemType {
             MemType::Code => "code",
         }
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> BiResult<Self> {
         Ok(match s {
             "fact" => Self::Fact,
@@ -106,25 +108,31 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
             "project '{project_id}' does not exist — create it first with create_project"
         ))
     })?;
-    let mem_type = input.mem_type.as_deref().unwrap_or("fact").to_string();
+    let mem_type = MemType::from_str(input.mem_type.as_deref().unwrap_or("fact"))?
+        .as_str()
+        .to_string();
     let importance = input.importance.unwrap_or(0.5).clamp(0.0, 1.0);
     let uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     let tags_json = serde_json::to_string(&input.tags.clone().unwrap_or_default())?;
 
     state.db.write(|tx| {
-        if let Some(old_uid) = &input.supersedes {
-            tx.execute(
-                "UPDATE memories SET superseded_by = id, updated_at = ?1
-                 WHERE uid = ?2 AND superseded_by IS NULL",
-                rusqlite::params![now, old_uid],
-            )?;
-        }
+        let superseded: Option<(i64, String)> = match input.supersedes.as_deref() {
+            Some(old_uid) => tx
+                .query_row(
+                    "SELECT id, uid FROM memories WHERE uid = ?1 AND project_id = ?2 AND superseded_by IS NULL",
+                    rusqlite::params![old_uid, project_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?,
+            None => None,
+        };
+        let supersedes_id = superseded.as_ref().map(|(id, _)| *id);
         tx.execute(
             "INSERT INTO memories(uid, project_id, mem_type, content, tags, source_agent,
                                   importance, decay_base, created_at, updated_at, last_access,
-                                  access_count, file_path, start_line, end_line, language)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8,?8,?8,0,?9,?10,?11,?12)",
+                                  access_count, file_path, start_line, end_line, language, supersedes)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8,?8,?8,0,?9,?10,?11,?12,?13)",
             rusqlite::params![
                 uid,
                 project_id,
@@ -138,8 +146,19 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
                 input.start_line,
                 input.end_line,
                 input.language,
+                supersedes_id,
             ],
         )?;
+        let new_id = tx.last_insert_rowid();
+        if let Some((old_id, old_uid)) = superseded {
+            tx.execute(
+                "UPDATE memories
+                 SET superseded_by = ?1, updated_at = ?2
+                 WHERE id = ?3 AND superseded_by IS NULL",
+                rusqlite::params![new_id, now, old_id],
+            )?;
+            crate::persistence::queue_index_delete(tx, &project_id, &old_uid)?;
+        }
         tx.execute(
             "UPDATE projects SET memory_count = memory_count + 1, updated_at = ?1 WHERE id = ?2",
             rusqlite::params![now, project_id],
@@ -152,11 +171,11 @@ pub fn remember(state: &AppState, input: RememberInput) -> BiResult<Memory> {
             Some(&uid),
             Some(&serde_json::json!({"mem_type": mem_type})),
         )?;
+        crate::persistence::queue_index_upsert(tx, &project_id, &uid, &input.content)?;
         Ok(())
     })?;
 
-    // Marks the index dirty; the background flusher in AppState persists it.
-    state.embed_and_add(&project_id, &uid, &input.content)?;
+    state.replay_index_mutations(&project_id)?;
 
     get(state, &uid)?.ok_or_else(|| BiError::Internal("memory not found post-insert".into()))
 }
@@ -178,9 +197,6 @@ pub fn get(state: &AppState, uid: &str) -> BiResult<Option<Memory>> {
 
 pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
     let mem = get(state, uid)?.ok_or_else(|| BiError::NotFound(uid.into()))?;
-    if let Ok(idx) = state.get_or_load_index(&mem.project_id) {
-        let _ = idx.remove(uid);
-    }
     let now = chrono::Utc::now().timestamp_millis();
     state.db.write(|tx| {
         tx.execute(
@@ -193,8 +209,10 @@ pub fn forget(state: &AppState, uid: &str) -> BiResult<bool> {
             rusqlite::params![now, mem.project_id],
         )?;
         log_activity(tx, Some(&mem.project_id), None, "forget", Some(uid), None)?;
+        crate::persistence::queue_index_delete(tx, &mem.project_id, uid)?;
         Ok(())
     })?;
+    state.replay_index_mutations(&mem.project_id)?;
     Ok(true)
 }
 
@@ -205,10 +223,10 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
         .content
         .clone()
         .unwrap_or_else(|| existing.content.clone());
-    let new_type = input
-        .mem_type
-        .clone()
-        .unwrap_or_else(|| existing.mem_type.clone());
+    let new_type = match input.mem_type.clone() {
+        Some(mem_type) => MemType::from_str(&mem_type)?.as_str().to_string(),
+        None => existing.mem_type.clone(),
+    };
     let new_tags_json = match input.tags.clone() {
         Some(t) => serde_json::to_string(&t)?,
         None => serde_json::to_string(&existing.tags)?,
@@ -233,11 +251,14 @@ pub fn update(state: &AppState, uid: &str, input: UpdateInput) -> BiResult<Memor
             Some(uid),
             None,
         )?;
+        if input.content.is_some() {
+            crate::persistence::queue_index_upsert(tx, &existing.project_id, uid, &new_content)?;
+        }
         Ok(())
     })?;
 
     if input.content.is_some() {
-        state.embed_and_add(&existing.project_id, uid, &new_content)?;
+        state.replay_index_mutations(&existing.project_id)?;
     }
 
     get(state, uid)?.ok_or_else(|| BiError::Internal("memory vanished after update".into()))
@@ -250,42 +271,63 @@ pub fn search(
     k: usize,
     mem_type: Option<&str>,
 ) -> BiResult<Vec<MemoryWithScore>> {
-    state.embedder.release_if_idle();
+    // Reject empty/whitespace-only queries early
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let k = k.clamp(1, 100);
+    if let Some(mem_type) = mem_type {
+        MemType::from_str(mem_type)?;
+    }
     let project_id = if project_id.is_empty() {
         state.default_project_id.clone()
     } else {
         project_id.to_string()
     };
+    state.embedder_for_project(&project_id)?.release_if_idle();
 
     let kk = (k * 3).max(30);
-    let vec_hits = state.embed_and_search(&project_id, query, kk, None)?;
-
     let conn = state.db.conn()?;
+
+    let allowlist_uids: Option<Vec<String>> = if let Some(t) = mem_type {
+        let mut stmt = conn.prepare_cached(
+            "SELECT uid FROM memories WHERE project_id = ?1 AND mem_type = ?2 AND superseded_by IS NULL",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![project_id, t], |r| r.get::<_, String>(0))?;
+        Some(rows.filter_map(|r| r.ok()).collect())
+    } else {
+        None
+    };
+
+    // turbovec expects a non-empty allowlist. More importantly, an empty
+    // typed candidate set is already a definitive empty result and should not
+    // load an embedding model or enter vector search at all.
+    if allowlist_uids.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(Vec::new());
+    }
+
+    let vec_hits = state.embed_and_search(&project_id, query, kk, allowlist_uids.as_deref())?;
     let fts_uids = fts_search(&conn, query, &project_id, mem_type, kk)?;
 
-    let mut fused: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
-    const RRF_K: f32 = 60.0;
-    for (rank, h) in vec_hits.iter().enumerate() {
-        let rank_score = 1.0 / (RRF_K + rank as f32 + 1.0);
-        let sim = h.score.clamp(0.0, 1.0);
-        let score = rank_score * (0.5 + 0.5 * sim);
-        *fused.entry(h.uid.clone()).or_insert(0.0) += score;
-    }
-    for (rank, (uid, _bm25)) in fts_uids.iter().enumerate() {
-        let score = 1.0 / (RRF_K + rank as f32 + 1.0);
-        *fused.entry(uid.clone()).or_insert(0.0) += score;
-    }
-
-    let mut ranked: Vec<(String, f32)> = fused.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.truncate(k);
+    let mut ranked = crate::recall::fuse_rankings(&vec_hits, &fts_uids);
+    // Keep more candidates for reranking (k*4 gives reranker more to work with).
+    ranked.truncate(k.saturating_mul(4).max(k));
 
     if ranked.is_empty() {
         return Ok(Vec::new());
     }
 
+    let feedback_boosts = crate::recall::feedback_boosts(
+        state,
+        &ranked
+            .iter()
+            .map(|(uid, _)| uid.clone())
+            .collect::<Vec<_>>(),
+    )?;
+
     let n = ranked.len();
-    let placeholders = std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",");
     let select_sql = format!(
         "SELECT uid, project_id, mem_type, content, tags, source_agent, importance,
                 supersedes, superseded_by, created_at, updated_at, last_access,
@@ -314,8 +356,7 @@ pub fn search(
         .collect();
     let top_uids: Vec<String> = hit_uids.iter().take(5).cloned().collect();
     if !hit_uids.is_empty() {
-        let placeholders = std::iter::repeat("?")
-            .take(hit_uids.len())
+        let placeholders = std::iter::repeat_n("?", hit_uids.len())
             .collect::<Vec<_>>()
             .join(",");
         state.db.write(|tx| {
@@ -342,21 +383,34 @@ pub fn search(
         })?;
     }
 
-    Ok(ranked
+    // Second-stage reranking: boost scores based on term matches in content, tags, path, and language
+    let query_terms = tokenize_query(query);
+    let mut reranked: Vec<MemoryWithScore> = ranked
         .into_iter()
-        .filter_map(|(uid, score)| {
+        .filter_map(|(uid, base_score)| {
             by_uid.remove(&uid).map(|memory| {
-                let boosted = score * (0.7 + 0.3 * memory.importance.clamp(0.0, 1.0));
+                let reranked_score =
+                    crate::recall::apply_ranking_boost(base_score, &memory, &query_terms)
+                        + feedback_boosts.get(&uid).copied().unwrap_or(0.0);
                 MemoryWithScore {
                     memory,
-                    score: boosted,
+                    score: reranked_score,
                 }
             })
         })
-        .collect())
+        .collect();
+
+    // Re-sort by reranked score
+    reranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    Ok(reranked.into_iter().take(k).collect())
 }
 
-fn fts_search(
+pub(crate) fn fts_search(
     conn: &rusqlite::Connection,
     query: &str,
     project_id: &str,
@@ -446,25 +500,6 @@ fn sanitize_fts_query(q: &str, combine: FtsCombine) -> String {
     tokens.join(sep)
 }
 
-#[cfg(test)]
-mod search_tests {
-    use super::*;
-
-    #[test]
-    fn fts_or_query_matches_any_token() {
-        let q = sanitize_fts_query("hybrid search turbovec", FtsCombine::Or);
-        assert!(q.contains(" OR "));
-        assert!(q.contains("\"hybrid\"*"));
-    }
-
-    #[test]
-    fn fts_skips_single_char_tokens() {
-        let q = sanitize_fts_query("a MCP server", FtsCombine::Or);
-        assert!(!q.contains("\"a\"*"));
-        assert!(q.contains("\"MCP\"*"));
-    }
-}
-
 pub fn list(
     state: &AppState,
     project_id: Option<&str>,
@@ -551,6 +586,136 @@ pub fn list_tags(state: &AppState, project_id: Option<&str>) -> BiResult<Vec<(St
     Ok(v)
 }
 
+/// Tokenize a query into normalized search terms.
+fn tokenize_query(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|t| t.to_lowercase())
+        .filter(|t| t.len() >= 2)
+        .collect()
+}
+
+/// Filter out common stopwords from query terms
+pub(crate) fn filter_stopwords(terms: &[String]) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "up",
+        "about",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "among",
+        "is",
+        "was",
+        "are",
+        "were",
+        "been",
+        "be",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "ought",
+        "used",
+        "how",
+        "what",
+        "when",
+        "where",
+        "why",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+        "myself",
+        "yourself",
+        "himself",
+        "herself",
+        "itself",
+        "ourselves",
+        "themselves",
+        "all",
+        "each",
+        "every",
+        "both",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
+    ];
+
+    terms
+        .iter()
+        .filter(|term| !STOPWORDS.contains(&term.as_str()))
+        .cloned()
+        .collect()
+}
+
 fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
     let tags_str: Option<String> = r.get(4)?;
     let tags: Vec<String> = tags_str
@@ -576,4 +741,85 @@ fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         end_line: r.get(15)?,
         language: r.get(16)?,
     })
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn fts_or_query_matches_any_token() {
+        let q = sanitize_fts_query("hybrid search turbovec", FtsCombine::Or);
+        assert!(q.contains(" OR "));
+        assert!(q.contains("\"hybrid\"*"));
+    }
+
+    #[test]
+    fn fts_skips_single_char_tokens() {
+        let q = sanitize_fts_query("a MCP server", FtsCombine::Or);
+        assert!(!q.contains("\"a\"*"));
+        assert!(q.contains("\"MCP\"*"));
+    }
+
+    #[test]
+    fn fts_query_strips_quotes_and_punctuation() {
+        let q = sanitize_fts_query(r#"auth: "login-flow"!"#, FtsCombine::Or);
+        assert!(q.contains("\"auth\"*"));
+        assert!(q.contains("\"login-flow\"*"));
+        assert!(!q.contains("!"));
+    }
+
+    #[test]
+    fn empty_type_filter_returns_without_vector_search() {
+        let dir = std::env::temp_dir().join(format!(
+            "biturbo-empty-filter-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let state = AppState::open(&dir).unwrap();
+
+        let hits = search(
+            &state,
+            &state.default_project_id,
+            "semaphore violet",
+            3,
+            Some("episode"),
+        )
+        .unwrap();
+
+        assert!(hits.is_empty());
+        assert_eq!(state.embedder.cache_len(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn superseding_memory_removes_old_vector_immediately() {
+        let dir = std::env::temp_dir().join(format!(
+            "biturbo-supersede-index-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let state = AppState::open(&dir).unwrap();
+        let old = remember(
+            &state,
+            RememberInput {
+                content: "the database is a json file".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let new = remember(
+            &state,
+            RememberInput {
+                content: "sqlite is the durable source of truth".into(),
+                supersedes: Some(old.uid.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let index = state.get_or_load_index(&state.default_project_id).unwrap();
+        assert!(!index.contains_uid(&old.uid));
+        assert!(index.contains_uid(&new.uid));
+        assert_eq!(index.len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

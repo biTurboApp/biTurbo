@@ -1,8 +1,8 @@
 use crate::error::{BiError, BiResult};
+use crate::ingest;
 use crate::memory::{self, Memory, MemoryWithScore, RememberInput, UpdateInput};
 use crate::project::{self, CreateProjectInput};
 use crate::state::AppState;
-use crate::{consolidate, ingest};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -14,6 +14,7 @@ pub async fn run_mcp_server_stdio() -> anyhow::Result<()> {
         .join("com.biturbo.app");
     std::fs::create_dir_all(&data_dir).ok();
     let state = Arc::new(AppState::open(&data_dir)?);
+    crate::operations::resume_pending(state.clone())?;
 
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -59,15 +60,19 @@ struct JsonRpcRequest {
 async fn dispatch(state: &Arc<AppState>, req: JsonRpcRequest) -> Value {
     let id = req.id.clone().unwrap_or(Value::Null);
     match req.method.as_str() {
-        "initialize" => ok(
-            &id,
-            json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "biTurbo", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "## biTurbo Memory Layer — Instructions\n\nYou have access to biTurbo, a persistent semantic memory layer via MCP.\n\n## Core loop (MANDATORY — follow this every turn):\n1. **RECALL** — call `recall_for_context(query=<user msg>, project_id=<current>, k=8)`.\n2. **ANSWER** — respond using recalled context.\n3. **REMEMBER** — call `remember()` after every response to store durable information.\n\n## When to `remember` (call **after every response**):\n- ✅ User states a fact about themselves/environment/project → `fact`\n- ✅ You make a decision with rationale → `decision`\n- ✅ User expresses a preference (style, verbosity, tools) → `preference`\n- ✅ User corrects you → `fact` with `supersedes`\n- ✅ You discover a codebase pattern → `pattern`\n- ✅ Something noteworthy happened → `episode`\n- ✅ Meta-observation about user or work → `reflection`\n- ❌ Transient state — don't remember\n- ❌ Public knowledge any LLM knows — don't remember\n- ❌ Secrets, tokens, PII — **NEVER**\n\nIf unsure: \"Would future-me in 6 months want to know this?\" If yes, remember.\n\n## Memory types:\n- `fact` — verifiable facts\n- `decision` — choices + why\n- `preference` — how user wants things\n- `pattern` — repeatable approaches\n- `episode` — past events (include timestamp)\n- `reflection` — meta-observations\n- `code` — set by ingest_project only\n\n## Importance (0-1):\n- 0.8-1.0: cross-project rules, key decisions\n- 0.5-0.7: typical (default 0.6)\n- 0.2-0.4: specific/stale details\n\n## Tags: 1-3 per memory. Good: `auth`, `ui`, `db`, `convention`, `api`. Bad: `important`, `todo`.\n\n## Session lifecycle:\n- START → `register_agent(name, kind)`, `list_projects()`\n- EVERY TURN → recall → answer → remember\n- END → `consolidate(project_id)`, final `remember`\n\n## Multi-project:\n- Always pass `project_id`. Isolated per project.\n- `project_id=\"default\"` for cross-cutting facts.\n\n## Anti-patterns:\n- Don't dump 10k memories — use recall_for_context k=5-10\n- Don't skip recall — amnesia is worse than no tool\n- Don't remember the obvious (Cargo, Git, syntax)\n- Don't forget prematurely — knowledge dies\n- Never cross-project leak — right project_id always\n- Never store secrets, tokens, PII\n\n## Tools (19):\nremember, forget, update, get_memory, search, list, list_tags,\nrecall_for_context, list_projects, get_project, create_project,\ndelete_project, ingest_project, consolidate, consolidate_status,\nstats, bootstrap, recent_activity, register_agent"
-            }),
-        ),
+        "initialize" => {
+            let mut response = ok(
+                &id,
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "biTurbo", "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": "## biTurbo Memory Layer — Instructions\n\nYou have access to biTurbo, a persistent semantic memory layer via MCP.\n\n## Core loop:\n1. **RECALL** — call `recall_for_context(query=<user msg>, project_id=<current>, k=8)`.\n2. **ANSWER** — respond using recalled context.\n3. **REMEMBER** — store only durable, useful information.\n\n## When to `remember`:\n- ✅ User states a fact about themselves/environment/project → `fact`\n- ✅ You make a decision with rationale → `decision`\n- ✅ User expresses a preference (style, verbosity, tools) → `preference`\n- ✅ User corrects you → `fact` with `supersedes`\n- ✅ You discover a codebase pattern → `pattern`\n- ✅ Something noteworthy happened → `episode`\n- ✅ Meta-observation about user or work → `reflection`\n- ❌ Transient state — don't remember\n- ❌ Public knowledge any LLM knows — don't remember\n- ❌ Secrets, tokens, PII — **NEVER**\n\nIf unsure: \"Would future-me in 6 months want to know this?\" If yes, remember.\n\n## Memory types:\n- `fact` — verifiable facts\n- `decision` — choices + why\n- `preference` — how user wants things\n- `pattern` — repeatable approaches\n- `episode` — past events (include timestamp)\n- `reflection` — meta-observations\n- `code` — set by ingest_project only\n\n## Importance (0-1):\n- 0.8-1.0: cross-project rules, key decisions\n- 0.5-0.7: typical (default 0.6)\n- 0.2-0.4: specific/stale details\n\n## Tags: 1-3 per memory. Good: `auth`, `ui`, `db`, `convention`, `api`. Bad: `important`, `todo`.\n\n## Session lifecycle:\n- START → `register_agent(name, kind)`, `list_projects()`\n- EVERY TURN → recall before non-trivial work\n- END → `consolidate(project_id)`, final `remember`\n\n## Multi-project:\n- Always pass `project_id`. Isolated per project.\n- `project_id=\"default\"` for cross-cutting facts.\n\n## Anti-patterns:\n- Don't dump 10k memories — use recall_for_context k=5-10\n- Don't skip recall for project-specific work — amnesia is worse than no tool\n- Don't remember the obvious (Cargo, Git, syntax)\n- Don't remember every response — memory quality matters more than volume\n- Don't forget prematurely — knowledge dies\n- Never cross-project leak — right project_id always\n- Never store secrets, tokens, PII\n\n## Tools (20):\nremember, forget, update, get_memory, search, list, list_tags,\nrecall_for_context, list_projects, get_project, create_project,\ndelete_project, ingest_project, consolidate, consolidate_status,\nget_project_name_from_file,\nstats, bootstrap, recent_activity, register_agent"
+                }),
+            );
+            response["result"]["instructions"] = Value::String(MCP_INSTRUCTIONS.into());
+            response
+        }
         "notifications/initialized" => json!({}),
         "tools/list" => ok(&id, json!({ "tools": tool_schemas() })),
         "tools/call" => {
@@ -97,6 +102,12 @@ async fn dispatch(state: &Arc<AppState>, req: JsonRpcRequest) -> Value {
 fn ok(id: &Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
+
+const MCP_INSTRUCTIONS: &str = r#"## biTurbo Memory Layer
+
+Use `register_agent` and `list_projects` at session start. Before non-trivial work, call `recall_for_context` with the active project. Store only durable facts, decisions, preferences, patterns, episodes, reflections, or indexed code; never store secrets or transient state. Always pass `project_id` to preserve isolation.
+
+The 27-tool public surface includes compatible memory/project APIs plus explainable recall (`recall_explain`, `submit_recall_feedback`) and supervised operations (`start_ingest`, `operation_status`, `list_operations`, `cancel_operation`, `retry_operation`). Legacy `ingest_project` and `consolidate` remain synchronous."#;
 
 async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<Vec<Value>> {
     let text = |v: &str| vec![json!({ "type": "text", "text": v })];
@@ -143,7 +154,7 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "search" => {
             let project_id = resolve_project_from_args(state, &args)?;
             let query = arg_str(&args, "query")?;
-            let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let k = bounded_k(&args, 10, 100);
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
             let hits: Vec<MemoryWithScore> =
                 memory::search(state, &project_id, &query, k, mem_type)?;
@@ -165,10 +176,29 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         "recall_for_context" => {
             let project_id = resolve_project_from_args(state, &args)?;
             let query = arg_str(&args, "query")?;
-            let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+            let k = bounded_k(&args, 8, 20);
             let mem_type = args.get("mem_type").and_then(|v| v.as_str());
             let hits = memory::search(state, &project_id, &query, k, mem_type)?;
             text(&format_context_block(&hits))
+        }
+        "recall_explain" => {
+            let project_id = resolve_project_from_args(state, &args)?;
+            let query = arg_str(&args, "query")?;
+            let k = bounded_k(&args, 8, 20);
+            let mem_type = args.get("mem_type").and_then(|v| v.as_str());
+            let response = crate::recall::explain(state, &project_id, &query, k, mem_type)?;
+            text(&serde_json::to_string_pretty(&response)?)
+        }
+        "submit_recall_feedback" => {
+            let recall_id = arg_str(&args, "recall_id")?;
+            let memory_uid = arg_str(&args, "memory_uid")?;
+            let value = args.get("value").and_then(|v| v.as_i64()).unwrap_or(1) as i8;
+            let source = args
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("explicit");
+            crate::recall::submit_feedback(state, &recall_id, &memory_uid, value, source)?;
+            text("{\"recorded\":true}")
         }
         "list_projects" => text(&serde_json::to_string_pretty(&project::list(state)?)?),
         "get_project" => {
@@ -206,8 +236,48 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             let root_path = arg_str(&args, "root_path")?;
             require_project(&project_id)?;
             require_path(&root_path, "root_path")?;
-            let r = ingest::ingest_project(state, &project_id, std::path::Path::new(&root_path))?;
+            let r = crate::operations::run_ingest_blocking(
+                state,
+                &project_id,
+                std::path::Path::new(&root_path),
+            )?;
             text(&serde_json::to_string_pretty(&r)?)
+        }
+        "start_ingest" => {
+            let project_id = arg_str(&args, "project_id")?;
+            let root_path = arg_str(&args, "root_path")?;
+            require_project(&project_id)?;
+            require_path(&root_path, "root_path")?;
+            let operation = crate::operations::start_ingest(
+                state,
+                &project_id,
+                std::path::Path::new(&root_path),
+            )?;
+            text(&serde_json::to_string_pretty(&operation)?)
+        }
+        "operation_status" => {
+            let id = arg_str(&args, "id")?;
+            text(&serde_json::to_string_pretty(&crate::operations::get(
+                state, &id,
+            )?)?)
+        }
+        "list_operations" => {
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+            text(&serde_json::to_string_pretty(&crate::operations::list(
+                state, limit,
+            )?)?)
+        }
+        "cancel_operation" => {
+            let id = arg_str(&args, "id")?;
+            text(&serde_json::to_string_pretty(
+                &crate::operations::request_cancel(state, &id)?,
+            )?)
+        }
+        "retry_operation" => {
+            let id = arg_str(&args, "id")?;
+            text(&serde_json::to_string_pretty(&crate::operations::retry(
+                state, &id,
+            )?)?)
         }
         "get_project_graph" => {
             let project_id = arg_str(&args, "project_id")?;
@@ -216,12 +286,10 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
         }
         "consolidate" => {
             let project_id = args.get("project_id").and_then(|v| v.as_str());
-            let r = if let Some(p) = project_id {
+            if let Some(p) = project_id {
                 require_project(p)?;
-                consolidate::consolidate(state, Some(p))?
-            } else {
-                crate::scheduler::run_now_blocking(state)?
-            };
+            }
+            let r = crate::operations::run_consolidate_blocking(state, project_id)?;
             text(&serde_json::to_string_pretty(&r)?)
         }
         "consolidate_status" => {
@@ -273,104 +341,24 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
             crate::io::set_project_embed_model(state, &project_id, model.as_deref())?;
             text("{}")
         }
-        "stats" => {
-            let conn = state.db.conn()?;
-            let total_memories: i64 =
-                conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-            let total_projects: i64 =
-                conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
-            let by_type = memory::count_by_type(state, None)?;
-            let out = json!({ "total_memories": total_memories, "total_projects": total_projects, "by_type": by_type });
-            text(&serde_json::to_string_pretty(&out)?)
-        }
-        "bootstrap" => {
-            let conn = state.db.conn()?;
-            let total_memories: i64 =
-                conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
-            let total_projects: i64 =
-                conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
-            let by_type = memory::count_by_type(state, None)?;
-            let projects = project::list(state)?;
-            let tags = memory::list_tags(state, None)?;
-            let recent_limit = 25_i64;
-            let mut s = conn.prepare("SELECT id, project_id, agent_id, action, memory_uid, created_at FROM activity ORDER BY created_at DESC LIMIT ?1")?;
-            let recent: Vec<Value> = s
-                .query_map(rusqlite::params![recent_limit], |r| {
-                    Ok(json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "project_id": r.get::<_, Option<String>>(1)?,
-                        "agent_id": r.get::<_, Option<String>>(2)?,
-                        "action": r.get::<_, String>(3)?,
-                        "memory_uid": r.get::<_, Option<String>>(4)?,
-                        "created_at": r.get::<_, i64>(5)?,
-                    }))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            let mut a = conn
-                .prepare("SELECT id, name, kind, last_seen FROM agents ORDER BY last_seen DESC")?;
-            let agents: Vec<Value> = a
-                .query_map([], |r| {
-                    Ok(json!({
-                        "id": r.get::<_, String>(0)?,
-                        "name": r.get::<_, String>(1)?,
-                        "kind": r.get::<_, String>(2)?,
-                        "last_seen": r.get::<_, i64>(3)?,
-                    }))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            let out = json!({
-                "stats": { "total_memories": total_memories, "total_projects": total_projects, "by_type": by_type },
-                "projects": projects,
-                "recent": recent,
-                "tags": tags,
-                "agents": agents,
-                "consolidate": crate::scheduler::get_status(),
-            });
-            text(&serde_json::to_string_pretty(&out)?)
-        }
+        "stats" => text(&serde_json::to_string_pretty(&crate::application::stats(
+            state,
+        )?)?),
+        "bootstrap" => text(&serde_json::to_string_pretty(
+            &crate::application::bootstrap(state)?,
+        )?),
         "recent_activity" => {
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as i64;
-            let conn = state.db.conn()?;
-            let mut s = conn.prepare("SELECT id, project_id, agent_id, action, memory_uid, detail, created_at FROM activity ORDER BY created_at DESC LIMIT ?1")?;
-            let rows: Vec<Value> = s
-                .query_map(rusqlite::params![limit], |r| {
-                    let detail_str: Option<String> = r.get(5)?;
-                    let detail = detail_str
-                        .as_deref()
-                        .and_then(|s| serde_json::from_str::<Value>(s).ok());
-                    Ok(json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "project_id": r.get::<_, Option<String>>(1)?,
-                        "agent_id": r.get::<_, Option<String>>(2)?,
-                        "action": r.get::<_, String>(3)?,
-                        "memory_uid": r.get::<_, Option<String>>(4)?,
-                        "detail": detail,
-                        "created_at": r.get::<_, i64>(6)?,
-                    }))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            drop(s);
-            text(&serde_json::to_string_pretty(&rows)?)
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            text(&serde_json::to_string_pretty(
+                &crate::application::recent_activity(state, limit)?,
+            )?)
         }
         "register_agent" => {
             let name = arg_str(&args, "name")?;
             let kind = arg_str(&args, "kind")?;
             let meta = args.get("meta").cloned();
-            let now = chrono::Utc::now().timestamp_millis();
-            let id = slugify(&name);
-            let meta_str = meta.as_ref().map(|v| v.to_string());
-            state.db.write(|tx| {
-                tx.execute(
-                    "INSERT INTO agents(id, name, kind, last_seen, created_at, meta) VALUES(?1,?2,?3,?4,?4,?5) ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen, meta = COALESCE(excluded.meta, agents.meta)",
-                    rusqlite::params![id, name, kind, now, meta_str],
-                )?;
-                Ok(())
-            })?;
             text(&serde_json::to_string_pretty(
-                &json!({ "id": id, "name": name, "kind": kind, "last_seen": now }),
+                &crate::application::register_agent(state, name, kind, meta)?,
             )?)
         }
         "get_project_name_from_file" => {
@@ -385,11 +373,17 @@ async fn call_tool(state: &Arc<AppState>, name: &str, args: Value) -> BiResult<V
                         .and_then(|line| line.strip_prefix("projectName="))
                         .map(String::from);
                     match project_name {
-                        Some(name) => text(&serde_json::to_string_pretty(&json!({ "projectName": name }))?),
-                        None => text(&serde_json::to_string_pretty(&json!({ "error": "projectName not set in .biTurbo file" }))?),
+                        Some(name) => text(&serde_json::to_string_pretty(
+                            &json!({ "projectName": name }),
+                        )?),
+                        None => text(&serde_json::to_string_pretty(
+                            &json!({ "error": "projectName not set in .biTurbo file" }),
+                        )?),
                     }
                 }
-                Err(_) => text(&serde_json::to_string_pretty(&json!({ "error": ".biTurbo file not found" }))?),
+                Err(_) => text(&serde_json::to_string_pretty(
+                    &json!({ "error": ".biTurbo file not found" }),
+                )?),
             }
         }
         other => return Err(BiError::Invalid(format!("unknown tool: {other}"))),
@@ -404,45 +398,143 @@ fn arg_str(args: &Value, key: &str) -> BiResult<String> {
         .ok_or_else(|| BiError::Invalid(format!("missing string arg: {key}")))
 }
 
+fn bounded_k(args: &Value, default: u64, max: u64) -> usize {
+    args.get("k")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(default)
+        .clamp(1, max) as usize
+}
+
 fn resolve_project_from_args(state: &AppState, args: &Value) -> BiResult<String> {
     let project_id = args.get("project_id").and_then(|v| v.as_str());
     let root_path = args.get("root_path").and_then(|v| v.as_str());
     project::resolve_project_id(state, project_id, root_path)
 }
 
+const RECALL_CONTEXT_MAX_CHARS: usize = 12_000;
+const RECALL_ITEM_MAX_CHARS: usize = 1_200;
+
+/// Map memory type string to single-char code for compact output.
+fn type_code(mem_type: &str) -> char {
+    match mem_type {
+        "fact" => 'f',
+        "decision" => 'd',
+        "preference" => 'p',
+        "pattern" => 'P',
+        "episode" => 'e',
+        "reflection" => 'r',
+        "code" => 'c',
+        _ => '?',
+    }
+}
+
+/// Smart truncation at sentence boundary. Falls back to hard cut if no boundary found.
+fn trim_for_context(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    // Try to cut at a sentence boundary (`.`, `!`, `?`, `\n`) near max_chars
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut cut = max_chars.min(chars.len());
+
+    // Walk backwards from max_chars looking for sentence end
+    let search_start = max_chars.saturating_sub(max_chars / 3);
+    for i in (search_start..cut).rev() {
+        if i < chars.len() && matches!(chars[i], '.' | '!' | '?' | '\n') {
+            cut = i + 1;
+            break;
+        }
+    }
+
+    let mut out: String = chars[..cut.min(chars.len())].iter().collect();
+    out.push('…');
+    out
+}
+
+/// Compute word-level Jaccard similarity between two texts (cheap proxy for semantic overlap).
+fn jaccard_similarity(a: &str, b: &str) -> f32 {
+    let words_a: std::collections::HashSet<&str> = a.split_whitespace().collect();
+    let words_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
+    if words_a.is_empty() && words_b.is_empty() {
+        return 1.0;
+    }
+    let intersection = words_a.intersection(&words_b).count();
+    let union = words_a.union(&words_b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f32 / union as f32
+}
+
+/// Filter near-duplicate hits: if two memories have Jaccard similarity > threshold,
+/// keep only the higher-scored one. Prevents wasting context budget on redundant info.
+fn deduplicate_hits(hits: &[MemoryWithScore], threshold: f32) -> Vec<MemoryWithScore> {
+    let mut kept: Vec<MemoryWithScore> = Vec::with_capacity(hits.len());
+    let mut skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for i in 0..hits.len() {
+        if skip.contains(&i) {
+            continue;
+        }
+        for j in (i + 1)..hits.len() {
+            if skip.contains(&j) {
+                continue;
+            }
+            let sim = jaccard_similarity(&hits[i].memory.content, &hits[j].memory.content);
+            if sim >= threshold {
+                // Keep the one with higher score (already sorted descending)
+                skip.insert(j);
+            }
+        }
+        kept.push(hits[i].clone());
+    }
+    kept
+}
+
 fn format_context_block(hits: &[MemoryWithScore]) -> String {
     if hits.is_empty() {
         return "<biTurboContext>no relevant memories</biTurboContext>".into();
     }
-    let mut s = String::from("<biTurboContext>\n");
-    for (i, h) in hits.iter().enumerate() {
+
+    // Deduplicate near-identical memories before formatting
+    let deduped = deduplicate_hits(hits, 0.55);
+
+    let mut s = String::from("<ctx>\n");
+    for (i, h) in deduped.iter().enumerate() {
+        let tc = type_code(&h.memory.mem_type);
+        let tags = h.memory.tags.join(",");
+
+        // Compact single-line header: [N] type|score|importance|tags
         s.push_str(&format!(
-            "[{}] ({} · score={:.3} · importance={:.2})\n{}\n\n",
+            "[{}] {}|{:.2}|{:.2}|{}\n",
             i + 1,
-            h.memory.mem_type,
+            tc,
             h.score,
             h.memory.importance,
-            h.memory.content.trim()
+            tags,
         ));
-    }
-    s.push_str("</biTurboContext>");
-    s
-}
 
-fn slugify(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+        // Optional location line for code memories
+        if let Some(path) = h.memory.file_path.as_deref() {
+            let range = match (h.memory.start_line, h.memory.end_line) {
+                (Some(start), Some(end)) => format!(":{start}-{end}"),
+                _ => String::new(),
+            };
+            let lang = h.memory.language.as_deref().unwrap_or("");
+            s.push_str(&format!("> {}{} {}\n", path, range, lang));
+        }
+
+        s.push_str(trim_for_context(&h.memory.content, RECALL_ITEM_MAX_CHARS).as_str());
+        s.push('\n');
+
+        if s.chars().count() >= RECALL_CONTEXT_MAX_CHARS {
+            break;
+        }
+    }
+    s.push_str("</ctx>");
+    s
 }
 
 fn tool_schemas() -> Value {
@@ -458,11 +550,18 @@ const SCHEMAS_JSON: &str = r#"[
 {"name":"list","description":"List memories with optional filters. Newest first. Default 50.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"},"mem_type":{"type":"string"},"limit":{"type":"number"},"offset":{"type":"number"}}}},
 {"name":"list_tags","description":"List tags for a project with usage counts. Newest first.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}},"required":["project_id"]}},
 {"name":"recall_for_context","description":"Build a <biTurboContext> block of top-k relevant memories. Pass project_id or root_path (reads .biTurbo).","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"root_path":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
+{"name":"recall_explain","description":"Recall ranked memories with source ranks, matched terms, feedback boost, and a recall id.","inputSchema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"project_id":{"type":"string"},"root_path":{"type":"string"},"mem_type":{"type":"string"},"k":{"type":"number"}}}},
+{"name":"submit_recall_feedback","description":"Record useful or not-useful feedback for one recalled memory.","inputSchema":{"type":"object","required":["recall_id","memory_uid","value"],"properties":{"recall_id":{"type":"string"},"memory_uid":{"type":"string"},"value":{"type":"number"},"source":{"type":"string"}}}},
 {"name":"list_projects","description":"List all projects.","inputSchema":{"type":"object","properties":{}}},
 {"name":"get_project","description":"Fetch one project by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"create_project","description":"Create a new project.","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"id":{"type":"string"},"description":{"type":"string"},"root_path":{"type":"string"},"bit_width":{"type":"number"}}}},
 {"name":"delete_project","description":"Delete a project and all its memories. 'default' cannot be deleted.","inputSchema":{"type":"object","required":["project_id"],"properties":{"project_id":{"type":"string"}}}},
-{"name":"ingest_project","description":"Index a code directory via tree-sitter (rust/typescript/javascript/python/go).","inputSchema":{"type":"object","required":["project_id","root_path"],"properties":{"project_id":{"type":"string"},"root_path":{"type":"string"}}}},
+{"name":"ingest_project","description":"Index a code directory via tree-sitter (22 languages, including rust/typescript/python/go/kotlin/sql/dart/lua/scala/r/powershell).","inputSchema":{"type":"object","required":["project_id","root_path"],"properties":{"project_id":{"type":"string"},"root_path":{"type":"string"}}}},
+{"name":"start_ingest","description":"Start an asynchronous supervised ingest and return its operation record.","inputSchema":{"type":"object","required":["project_id","root_path"],"properties":{"project_id":{"type":"string"},"root_path":{"type":"string"}}}},
+{"name":"operation_status","description":"Get one persisted operation by id.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
+{"name":"list_operations","description":"List recent supervised operations.","inputSchema":{"type":"object","properties":{"limit":{"type":"number"}}}},
+{"name":"cancel_operation","description":"Request operation cancellation at its next safe checkpoint.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
+{"name":"retry_operation","description":"Retry a failed or cancelled operation from its persisted input checkpoint.","inputSchema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}},
 {"name":"consolidate","description":"Run memory maintenance: decay, dedup (cosine >= 0.95), merge.","inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}}},
 {"name":"consolidate_status","description":"Status of the background consolidate scheduler (running/idle, last run, next run).","inputSchema":{"type":"object","properties":{}}},
 {"name":"stats","description":"Global stats.","inputSchema":{"type":"object","properties":{}}},

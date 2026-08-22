@@ -13,6 +13,7 @@ import { useApp, useConfirm, useContextMenu } from "../lib/store";
 import { api } from "../lib/api";
 import type { ContextMenuItem } from "./ContextMenu";
 import clsx from "clsx";
+import { friendlyError } from "../lib/format";
 
 const nav = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
@@ -27,10 +28,11 @@ export function Sidebar() {
   const view = useApp((s) => s.view);
   const setView = useApp((s) => s.setView);
   const agents = useApp((s) => s.agents);
-  const stats = useApp((s) => s.stats);
+  // Narrow subscription: only subscribe to total_memories, not the entire stats object.
+  const totalMem = useApp((s) => s.stats?.total_memories ?? 0);
+  const totalProjects = useApp((s) => s.stats?.total_projects ?? 0);
 
   const connectedAgents = agents.length;
-  const totalMem = stats?.total_memories ?? 0;
 
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-border-subtle bg-surface/40">
@@ -75,7 +77,7 @@ export function Sidebar() {
           <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-widest text-text-dim">
             <span>Projects</span>
             <span className="font-mono text-text-dim">
-              {stats?.total_projects ?? 0}
+              {totalProjects}
             </span>
           </div>
           <ProjectList />
@@ -86,7 +88,7 @@ export function Sidebar() {
       <div className="border-t border-border-subtle p-3">
         <div className="flex items-center gap-2 rounded-md bg-surface-2 px-3 py-2">
           <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-pulse_dot rounded-full bg-success opacity-75" />
+            {/* Static status dot — infinite CSS pulse keeps WebKit busy under WSLg zoom. */}
             <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
           </span>
           <div className="flex-1 text-xs">
@@ -103,19 +105,11 @@ export function Sidebar() {
 
 function Logo() {
   return (
-    <div className="relative h-7 w-7 shrink-0">
-      <div
-        className="absolute inset-0 rounded-md"
-        style={{
-          background:
-            "linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 55%, #000 45%) 100%)",
-        }}
-      />
-      <div className="absolute inset-[3px] rounded-[5px] bg-bg" />
-      <div className="absolute inset-[3px] flex items-center justify-center">
-        <div className="h-2 w-2 rounded-full bg-accent" />
-      </div>
-    </div>
+    <img
+      src="/logo.png"
+      alt="biTurbo"
+      className="h-7 w-7 shrink-0 object-cover"
+    />
   );
 }
 
@@ -133,10 +127,11 @@ function ProjectList() {
 
   async function ingestNow(projectId: string, rootPath: string) {
     try {
-      await api.ingestProject(projectId, rootPath);
+      const job = await api.ingestProject(projectId, rootPath);
+      useApp.getState().registerIngestJob(projectId, job.job_id);
       showToast({ kind: "ok", text: `Indexing ${projectId}…` });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 
@@ -157,7 +152,7 @@ function ProjectList() {
       await Promise.all([refreshProjects(), refreshStats(), refreshGraph().catch(() => {})]);
       showToast({ kind: "ok", text: "Deleted" });
     } catch (e) {
-      showToast({ kind: "err", text: String(e) });
+      showToast({ kind: "err", text: friendlyError(e) });
     }
   }
 

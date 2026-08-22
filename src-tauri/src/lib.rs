@@ -16,8 +16,10 @@
 //! └─────────────────────────────────────────────────────────────┘
 //!
 //! Data lives in the OS app-data dir (~/Library/Application Support/com.biturbo.app/
-//! on macOS). Both the GUI and the MCP server share the same on-disk state.
+//! on macOS, %APPDATA%\com.biturbo.app on Windows, ~/.local/share/com.biturbo.app on
+//! Linux). Both the GUI and the MCP server share the same on-disk state.
 
+pub mod application;
 pub mod commands;
 pub mod consolidate;
 pub mod db;
@@ -28,7 +30,10 @@ pub mod ingest;
 pub mod io;
 pub mod mcp;
 pub mod memory;
+pub mod operations;
+pub mod persistence;
 pub mod project;
+pub mod recall;
 pub mod scheduler;
 pub mod smoke;
 pub mod state;
@@ -80,7 +85,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             tray::setup(app)?;
 
             let data_dir = app.path().app_data_dir().expect("app data dir resolvable");
@@ -94,12 +103,13 @@ pub fn run() {
             state.app = Some(app.handle().clone());
             let state_arc = Arc::new(state);
             scheduler::spawn(state_arc.clone());
+            let _ = operations::resume_pending(state_arc.clone());
             io::resume_watches(&state_arc);
             app.manage((*state_arc).clone());
             info!("biTurbo ready @ {}", data_dir.display());
             Ok(())
         })
-        .on_window_event(|window, event| tray::on_window_event(window, event))
+        .on_window_event(tray::on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::list_memories,
@@ -108,12 +118,20 @@ pub fn run() {
             commands::forget_memory,
             commands::update_memory,
             commands::search_memories,
+            commands::recall_explain,
+            commands::submit_recall_feedback,
             commands::list_projects,
             commands::create_project,
             commands::delete_project,
+            commands::ensure_project_marker_files,
             commands::get_project,
             commands::ingest_project,
+            commands::start_ingest,
             commands::ingest_multiple_projects,
+            commands::operation_status,
+            commands::list_operations,
+            commands::cancel_operation,
+            commands::retry_operation,
             commands::get_project_graph,
             commands::list_tags,
             commands::consolidate_now,
@@ -127,6 +145,11 @@ pub fn run() {
             commands::list_agents,
             commands::register_agent,
             commands::recent_activity,
+            commands::bootstrap,
+            commands::resolve_mcp_binary_path,
+            commands::install_mcp_config,
+            commands::check_for_updates,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

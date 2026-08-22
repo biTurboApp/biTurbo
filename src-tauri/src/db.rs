@@ -12,17 +12,20 @@ use crate::error::BiResult;
 use parking_lot::Mutex;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, DatabaseName, OptionalExtension};
 use std::collections::HashMap;
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 
 pub fn open_pool(db_path: &Path) -> BiResult<DbPool> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
+    prepare_database(db_path)?;
     let manager = SqliteConnectionManager::file(db_path).with_init(|c| {
         c.execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -38,9 +41,98 @@ pub fn open_pool(db_path: &Path) -> BiResult<DbPool> {
         Ok(())
     });
     let pool = Pool::builder().max_size(6).build(manager)?;
-    let conn = pool.get()?;
-    init_schema(&conn)?;
     Ok(pool)
+}
+
+/// Upgrade the database before pooled connections are opened. A process-wide
+/// file lock prevents the GUI and MCP sidecar from racing through migrations.
+fn prepare_database(db_path: &Path) -> BiResult<()> {
+    let parent = db_path
+        .parent()
+        .ok_or_else(|| crate::error::BiError::Db("database has no parent directory".into()))?;
+    let lock_path = parent.join("biturbo.migrate.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+
+    let existed = db_path.exists() && std::fs::metadata(db_path).is_ok_and(|m| m.len() > 0);
+    let mut conn = rusqlite::Connection::open(db_path)?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= CURRENT_SCHEMA_VERSION {
+        fs2::FileExt::unlock(&lock)?;
+        return Ok(());
+    }
+
+    let stamp = chrono::Utc::now().timestamp_millis();
+    let (backup, index_metadata_backup) = if existed {
+        let backup_dir = parent.join("backups");
+        std::fs::create_dir_all(&backup_dir)?;
+        let path = backup_dir.join(format!(
+            "biturbo-pre-v{}-{}.db",
+            CURRENT_SCHEMA_VERSION, stamp
+        ));
+        conn.backup(DatabaseName::Main, &path, None)?;
+        let metadata = backup_index_metadata(parent, &backup_dir, stamp)?;
+        (Some(path), metadata)
+    } else {
+        (None, Vec::new())
+    };
+
+    if let Err(error) = run_migrations(&mut conn) {
+        if let Some(path) = &backup {
+            let _ = conn.restore(
+                DatabaseName::Main,
+                path,
+                None::<fn(rusqlite::backup::Progress)>,
+            );
+        }
+        restore_index_metadata(&index_metadata_backup);
+        let _ = fs2::FileExt::unlock(&lock);
+        return Err(error);
+    }
+    fs2::FileExt::unlock(&lock)?;
+    Ok(())
+}
+
+fn backup_index_metadata(
+    data_dir: &Path,
+    backup_dir: &Path,
+    stamp: i64,
+) -> BiResult<Vec<(PathBuf, PathBuf)>> {
+    let indices = data_dir.join("indices");
+    if !indices.is_dir() {
+        return Ok(Vec::new());
+    }
+    let destination = backup_dir.join(format!(
+        "index-metadata-pre-v{}-{stamp}",
+        CURRENT_SCHEMA_VERSION
+    ));
+    let mut copied = Vec::new();
+    for entry in std::fs::read_dir(indices)? {
+        let entry = entry?;
+        let source = entry.path();
+        if source.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        std::fs::create_dir_all(&destination)?;
+        let target = destination.join(entry.file_name());
+        std::fs::copy(&source, &target)?;
+        copied.push((target, source));
+    }
+    Ok(copied)
+}
+
+fn restore_index_metadata(files: &[(PathBuf, PathBuf)]) {
+    for (backup, original) in files {
+        if let Some(parent) = original.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(backup, original);
+    }
 }
 
 pub fn rebuild_fts_index(conn: &rusqlite::Connection) -> BiResult<usize> {
@@ -53,8 +145,9 @@ pub fn rebuild_fts_index(conn: &rusqlite::Connection) -> BiResult<usize> {
     Ok(n as usize)
 }
 
-pub fn init_schema(conn: &rusqlite::Connection) -> BiResult<()> {
-    conn.execute_batch(SCHEMA)?;
+pub fn run_migrations(conn: &mut rusqlite::Connection) -> BiResult<()> {
+    let tx = conn.transaction()?;
+    tx.execute_batch(SCHEMA)?;
 
     let mut added_decay_base = false;
     for (table, col, decl) in &[
@@ -62,7 +155,7 @@ pub fn init_schema(conn: &rusqlite::Connection) -> BiResult<()> {
         ("projects", "watch_enabled", "INTEGER NOT NULL DEFAULT 0"),
         ("memories", "decay_base", "REAL"),
     ] {
-        let present: i64 = conn
+        let present: i64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
                 params![table, col],
@@ -71,7 +164,7 @@ pub fn init_schema(conn: &rusqlite::Connection) -> BiResult<()> {
             .unwrap_or(0);
         if present == 0 {
             let sql = format!("ALTER TABLE {table} ADD COLUMN {col} {decl}");
-            conn.execute_batch(&sql)?;
+            tx.execute_batch(&sql)?;
             if *col == "decay_base" {
                 added_decay_base = true;
             }
@@ -81,12 +174,13 @@ pub fn init_schema(conn: &rusqlite::Connection) -> BiResult<()> {
     // Seed the decay baseline from current importances exactly once, so
     // consolidate can recompute decayed importance idempotently (#435).
     if added_decay_base {
-        conn.execute("UPDATE memories SET decay_base = importance", [])?;
+        tx.execute("UPDATE memories SET decay_base = importance", [])?;
     }
+    tx.execute_batch(RELIABILITY_SCHEMA)?;
 
     // One-time repair for FTS rows left stale by INSERT OR REPLACE bypassing
     // the delete trigger (#525): rebuild the full-text index once per database.
-    let fts_repaired: Option<String> = conn
+    let fts_repaired: Option<String> = tx
         .query_row(
             "SELECT value FROM settings WHERE key = 'fts_rebuild_v1'",
             [],
@@ -94,14 +188,15 @@ pub fn init_schema(conn: &rusqlite::Connection) -> BiResult<()> {
         )
         .optional()?;
     if fts_repaired.is_none() {
-        let n = rebuild_fts_index(conn)?;
-        conn.execute(
+        let n = rebuild_fts_index(&tx)?;
+        tx.execute(
             "INSERT INTO settings(key, value) VALUES('fts_rebuild_v1', '1')",
             [],
         )?;
         tracing::info!("one-time FTS rebuild after upgrade: {n} rows reindexed");
     }
-
+    tx.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -229,9 +324,76 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 "#;
 
+const RELIABILITY_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS index_mutations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  TEXT NOT NULL,
+    memory_uid  TEXT NOT NULL,
+    operation   TEXT NOT NULL CHECK(operation IN ('upsert', 'delete')),
+    content     TEXT,
+    content_hash TEXT,
+    created_at  INTEGER NOT NULL,
+    applied_at  INTEGER,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_index_mutations_pending
+    ON index_mutations(project_id, applied_at, id);
+
+CREATE TABLE IF NOT EXISTS index_state (
+    project_id              TEXT PRIMARY KEY,
+    last_applied_mutation   INTEGER NOT NULL DEFAULT 0,
+    content_digest          TEXT,
+    verified_at             INTEGER,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS operations (
+    id                TEXT PRIMARY KEY,
+    kind              TEXT NOT NULL,
+    project_id        TEXT,
+    status            TEXT NOT NULL,
+    phase             TEXT,
+    current           INTEGER NOT NULL DEFAULT 0,
+    total             INTEGER NOT NULL DEFAULT 0,
+    checkpoint        TEXT,
+    result            TEXT,
+    error             TEXT,
+    cancel_requested  INTEGER NOT NULL DEFAULT 0,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    started_at        INTEGER,
+    finished_at       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_operations_status ON operations(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_operations_project ON operations(project_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS recall_events (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    query_hash      TEXT NOT NULL,
+    result_uids     TEXT NOT NULL,
+    explanations    TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_recall_events_project ON recall_events(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS recall_feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    recall_id   TEXT NOT NULL,
+    memory_uid  TEXT NOT NULL,
+    value       INTEGER NOT NULL CHECK(value IN (-1, 1)),
+    source      TEXT NOT NULL CHECK(source IN ('explicit', 'implicit')),
+    created_at  INTEGER NOT NULL,
+    FOREIGN KEY(recall_id) REFERENCES recall_events(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_recall_feedback_memory ON recall_feedback(memory_uid, created_at DESC);
+"#;
+
 pub struct Db {
     pub pool: Arc<DbPool>,
     pub write_lock: Arc<Mutex<()>>,
+    process_lock_path: Arc<PathBuf>,
 }
 
 impl Clone for Db {
@@ -239,6 +401,7 @@ impl Clone for Db {
         Self {
             pool: self.pool.clone(),
             write_lock: self.write_lock.clone(),
+            process_lock_path: self.process_lock_path.clone(),
         }
     }
 }
@@ -249,6 +412,7 @@ impl Db {
         Ok(Self {
             pool: Arc::new(pool),
             write_lock: Arc::new(Mutex::new(())),
+            process_lock_path: Arc::new(db_path.with_extension("write.lock")),
         })
     }
 
@@ -262,10 +426,18 @@ impl Db {
         F: FnOnce(&rusqlite::Transaction<'_>) -> BiResult<T>,
     {
         let _g = self.write_lock.lock();
+        let process_lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.process_lock_path.as_ref())?;
+        fs2::FileExt::lock_exclusive(&process_lock)?;
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let out = f(&tx)?;
         tx.commit()?;
+        fs2::FileExt::unlock(&process_lock)?;
         Ok(out)
     }
 }
@@ -375,8 +547,7 @@ pub fn code_uids_for_file(
 
 pub fn delete_memories_by_uids(tx: &rusqlite::Transaction<'_>, uids: &[String]) -> BiResult<()> {
     for chunk in uids.chunks(400) {
-        let placeholders = std::iter::repeat("?")
-            .take(chunk.len())
+        let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!("DELETE FROM memories WHERE uid IN ({placeholders})");
@@ -394,8 +565,7 @@ pub fn delete_code_edges_for_files(
     file_uids: &[String],
 ) -> BiResult<()> {
     for chunk in file_uids.chunks(400) {
-        let placeholders = std::iter::repeat("?")
-            .take(chunk.len())
+        let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
@@ -434,4 +604,88 @@ pub fn log_activity(
         chrono::Utc::now().timestamp_millis(),
     ])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    fn temp_db() -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("biturbo-migration-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("biturbo.db")
+    }
+
+    #[test]
+    fn opening_legacy_database_preserves_data_and_creates_backup() {
+        let db_path = temp_db();
+        let indices = db_path.parent().unwrap().join("indices");
+        std::fs::create_dir_all(&indices).unwrap();
+        std::fs::write(indices.join("default.uidmap.json"), "{\"legacy\":true}").unwrap();
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE legacy_marker(value TEXT NOT NULL);
+                 INSERT INTO legacy_marker(value) VALUES('keep-me');
+                 PRAGMA user_version = 0;",
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&db_path).unwrap();
+        let conn = db.conn().unwrap();
+        let marker: String = conn
+            .query_row("SELECT value FROM legacy_marker", [], |r| r.get(0))
+            .unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(marker, "keep-me");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+
+        let backups = db_path.parent().unwrap().join("backups");
+        assert!(backups.read_dir().unwrap().any(|entry| {
+            entry.ok().is_some_and(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("biturbo-pre-v1-")
+            })
+        }));
+        assert!(std::fs::read_dir(&backups).unwrap().flatten().any(|entry| {
+            entry.path().is_dir() && entry.path().join("default.uidmap.json").is_file()
+        }));
+
+        std::fs::remove_dir_all(db_path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn failed_migration_rolls_back_every_schema_change() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE legacy_marker(value TEXT NOT NULL);
+             CREATE TABLE operations(id INTEGER);
+             INSERT INTO legacy_marker(value) VALUES('untouched');
+             PRAGMA user_version = 0;",
+        )
+        .unwrap();
+
+        assert!(run_migrations(&mut conn).is_err());
+        let marker: String = conn
+            .query_row("SELECT value FROM legacy_marker", [], |row| row.get(0))
+            .unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let projects: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, "untouched");
+        assert_eq!(version, 0);
+        assert_eq!(projects, 0);
+    }
 }

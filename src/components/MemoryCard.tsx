@@ -1,10 +1,11 @@
-import type { Memory } from "../lib/types";
-import { MEM_TYPE_META, timeAgo, importanceDots } from "../lib/format";
-import { FileCode2, Hash } from "lucide-react";
+import type { Memory, RecallExplanation } from "../lib/types";
+import { MEM_TYPE_META, timeAgo, importanceDots, truncatePath, stripLeadingPathComment } from "../lib/format";
+import { FileCode2, Hash, ThumbsDown, ThumbsUp } from "lucide-react";
 import clsx from "clsx";
 import { memo } from "react";
 import type { ContextMenuItem } from "./ContextMenu";
 import { useContextMenu } from "../lib/store";
+import { CodeBlock } from "./CodeBlock";
 
 interface MemoryCardProps {
   memory: Memory;
@@ -12,6 +13,10 @@ interface MemoryCardProps {
   onClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   contextMenuItems?: ContextMenuItem[];
+  explanation?: RecallExplanation;
+  onFeedback?: (value: -1 | 1) => void;
+  /** Semantic relevance 0..1 — shown only for search hits. */
+  score?: number;
 }
 
 export const MemoryCard = memo(function MemoryCard({
@@ -20,6 +25,9 @@ export const MemoryCard = memo(function MemoryCard({
   onClick,
   onContextMenu,
   contextMenuItems,
+  explanation,
+  onFeedback,
+  score,
 }: MemoryCardProps) {
   const meta = MEM_TYPE_META[memory.mem_type] ?? MEM_TYPE_META.fact;
   const dots = importanceDots(memory.importance);
@@ -36,11 +44,31 @@ export const MemoryCard = memo(function MemoryCard({
         }
       : undefined);
 
+  // Keyboard parity with mouse: Enter/Space activate, Shift+F10 or the
+  // Menu key opens the context menu at the card.
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick?.();
+      return;
+    }
+    if ((e.shiftKey && e.key === "F10") || e.key === "ContextMenu") {
+      e.preventDefault();
+      if (!contextMenuItems) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      showMenu(rect.left + rect.width / 2, rect.top + rect.height / 2, contextMenuItems);
+    }
+  }
+
   return (
     <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={handleKeyDown}
       onContextMenu={handleContext}
       className={clsx("memory-card", active && "active")}>
+
       <div className="mb-2 flex items-center gap-2">
         <span
           className={clsx(
@@ -57,22 +85,47 @@ export const MemoryCard = memo(function MemoryCard({
             superseded
           </span>
         )}
-        <span className="ml-auto font-mono text-[10px] text-text-dim">
+        {score != null && (
+          <span
+            title="Relevance"
+            className="ml-auto font-mono text-[10px] text-accent"
+          >
+            {Math.round(score * 100)}%
+          </span>
+        )}
+        <span
+          className={clsx(
+            "font-mono text-[10px] text-text-dim",
+            score == null && "ml-auto",
+          )}
+        >
           {timeAgo(memory.created_at)}
         </span>
       </div>
 
-      <div className="line-clamp-3 text-sm leading-relaxed text-text text-pretty">
-        {memory.content}
-      </div>
+      {isCode ? (
+        <CodeBlock
+          code={stripLeadingPathComment(memory.content, memory.file_path)}
+          maxLines={4}
+        />
+      ) : (
+        <div className="line-clamp-3 text-sm leading-relaxed text-text text-pretty">
+          {memory.content}
+        </div>
+      )}
 
       {isCode && memory.file_path && (
-        <div className="code-callout mt-2 flex items-center gap-1.5 rounded border px-1.5 py-0.5 font-mono text-[11px]">
-          <FileCode2 size={11} />
-          <span className="truncate">
-            {memory.file_path.split("/").slice(-2).join("/")}
-            {memory.start_line && `:${memory.start_line}`}
-          </span>
+        <div className="code-chip mt-2 text-[11px]" title={memory.file_path}>
+          <FileCode2 size={11} className="shrink-0" />
+          <span className="code-chip-path">{truncatePath(memory.file_path)}</span>
+          {memory.start_line && (
+            <span className="code-chip-range">
+              L{memory.start_line}
+              {memory.end_line && memory.end_line !== memory.start_line
+                ? `\u2013${memory.end_line}`
+                : ""}
+            </span>
+          )}
         </div>
       )}
 
@@ -85,6 +138,42 @@ export const MemoryCard = memo(function MemoryCard({
         ))}
 
         <div className="ml-auto flex items-center gap-2">
+          {explanation && (
+            <span
+              className="font-mono text-[9px] text-text-dim"
+              title={`Matched: ${explanation.matched_terms.join(", ") || "semantic only"}`}
+            >
+              {explanation.vector_rank ? `v#${explanation.vector_rank}` : ""}
+              {explanation.vector_rank && explanation.fts_rank ? " · " : ""}
+              {explanation.fts_rank ? `text#${explanation.fts_rank}` : ""}
+            </span>
+          )}
+          {onFeedback && (
+            <span className="flex items-center gap-0.5">
+              <button
+                type="button"
+                title="Useful result"
+                className="rounded p-1 text-text-dim hover:bg-accent/10 hover:text-accent"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onFeedback(1);
+                }}
+              >
+                <ThumbsUp size={10} />
+              </button>
+              <button
+                type="button"
+                title="Not useful"
+                className="rounded p-1 text-text-dim hover:bg-danger/10 hover:text-danger"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onFeedback(-1);
+                }}
+              >
+                <ThumbsDown size={10} />
+              </button>
+            </span>
+          )}
           {memory.source_agent && (
             <span className="font-mono text-[10px] text-text-dim">
               {memory.source_agent}

@@ -16,6 +16,20 @@ import type { ContextMenuItem } from "../components/ContextMenu";
 export type View = "overview" | "memories" | "projects" | "graph" | "agents" | "settings";
 export type Theme = "dark" | "light";
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
+export interface ToastEntry {
+  id: number;
+  kind: "ok" | "err" | "info";
+  text: string;
+  action?: ToastAction;
+}
+
+let toastSeq = 0;
+
 interface AppStore {
   view: View;
   setView: (v: View) => void;
@@ -40,6 +54,9 @@ interface AppStore {
 
   searchQuery: string;
   setSearchQuery: (q: string) => void;
+  /** Type picked on Overview; Memories consumes and clears it. */
+  pendingTypeFilter: string | null;
+  setTypeFilter: (t: string | null) => void;
 
   tags: [string, number][];
   refreshTags: () => Promise<void>;
@@ -47,24 +64,31 @@ interface AppStore {
   memories: Memory[];
   selectedMemoryUid: string | null;
   setSelectedMemoryUid: (uid: string | null) => void;
+  /** Full record for a selected uid that is not present in any loaded list. */
+  hydratedSelected: Memory | null;
+  selectMemoryByUid: (uid: string) => Promise<void>;
   memoryOffset: number;
   hasMoreMemories: boolean;
+  memoriesLoading: boolean;
   loadMoreMemories: () => Promise<void>;
   refreshMemories: () => Promise<void>;
 
   quickAddOpen: boolean;
   setQuickAddOpen: (open: boolean) => void;
 
-  toast: { kind: "ok" | "err" | "info"; text: string } | null;
-  showToast: (t: { kind: "ok" | "err" | "info"; text: string }) => void;
-  clearToast: () => void;
+  toasts: ToastEntry[];
+  showToast: (t: { kind: "ok" | "err" | "info"; text: string; action?: ToastAction }) => void;
+  dismissToast: (id: number) => void;
 
   graph: GraphData | null;
   refreshGraph: () => Promise<void>;
 
   ingestJobs: Record<string, IngestProgress>;
+  /** project_id → backend job id, captured at ingest start for cancellation. */
+  ingestJobIds: Record<string, string>;
+  registerIngestJob: (project_id: string, job_id: string) => void;
   startIngest: (project_id: string, root_path: string) => Promise<string>;
-  cancelIngest: (job_id: string) => void;
+  cancelIngest: (job_id: string) => Promise<void>;
 
   bootstrapLoaded: boolean;
   bootstrapOnce: () => Promise<void>;
@@ -128,8 +152,13 @@ export const useApp = create<AppStore>((set, get) => ({
   refreshProjects: async () => {
     const projects = await api.listProjects();
     set({ projects });
-    if (!get().currentProjectId && projects.length) {
-      set({ currentProjectId: projects[0].id });
+    // If the active project no longer exists (e.g. just deleted), fall
+    // back to a surviving project so scoped views don't keep filtering
+    // by a dead id.
+    const current = get().currentProjectId;
+    if ((!current || !projects.some((p) => p.id === current)) && projects.length > 0) {
+      const fallback = projects.find((p) => p.id === "default") ?? projects[0];
+      set({ currentProjectId: fallback.id, selectedMemoryUid: null });
     }
   },
 
@@ -140,10 +169,12 @@ export const useApp = create<AppStore>((set, get) => ({
   refreshStats: async () => set({ stats: await api.stats() }),
 
   activity: [],
-  refreshActivity: async () => set({ activity: await api.recentActivity(60) }),
-
+  refreshActivity: async () => set({ activity: await api.recentActivity(1000) }),
   searchQuery: "",
   setSearchQuery: (q) => set({ searchQuery: q }),
+  pendingTypeFilter: null,
+  setTypeFilter: (t) => set({ pendingTypeFilter: t }),
+
 
   tags: [],
   refreshTags: async () => {
@@ -152,8 +183,21 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   memories: [],
+  memoriesLoading: false,
   selectedMemoryUid: null,
   setSelectedMemoryUid: (uid) => set({ selectedMemoryUid: uid }),
+  hydratedSelected: null,
+  selectMemoryByUid: async (uid) => {
+    set({ selectedMemoryUid: uid, hydratedSelected: null });
+    try {
+      const m = await api.getMemory(uid);
+      if (get().selectedMemoryUid === uid) {
+        set({ hydratedSelected: m });
+      }
+    } catch (e) {
+      get().showToast({ kind: "err", text: String(e) });
+    }
+  },
   memoryOffset: 0,
   hasMoreMemories: false,
   loadMoreMemories: async () => {
@@ -175,29 +219,35 @@ export const useApp = create<AppStore>((set, get) => ({
     });
   },
   refreshMemories: async () => {
-    const mems = await api.listMemories({
-      project_id: get().currentProjectId,
-      limit: 50,
-      offset: 0,
-    });
-    set({
-      memories: mems,
-      memoryOffset: mems.length,
-      hasMoreMemories: mems.length === 50,
-    });
+    set({ memoriesLoading: true });
+    try {
+      const mems = await api.listMemories({
+        project_id: get().currentProjectId,
+        limit: 50,
+        offset: 0,
+      });
+      set({
+        memories: mems,
+        memoryOffset: mems.length,
+        hasMoreMemories: mems.length === 50,
+      });
+    } finally {
+      set({ memoriesLoading: false });
+    }
   },
 
   quickAddOpen: false,
   setQuickAddOpen: (open) => set({ quickAddOpen: open }),
 
-  toast: null,
+  toasts: [],
   showToast: (t) => {
-    set({ toast: t });
-    setTimeout(() => {
-      if (get().toast === t) set({ toast: null });
-    }, 3500);
+    const id = ++toastSeq;
+    // Errors linger longer; the queue caps so bursts can't flood the UI.
+    const ttl = t.kind === "err" ? 6500 : 3500;
+    set((s) => ({ toasts: [...s.toasts.slice(-3), { id, ...t }] }));
+    setTimeout(() => get().dismissToast(id), ttl);
   },
-  clearToast: () => set({ toast: null }),
+  dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) })),
 
   graph: null,
   refreshGraph: async () => {
@@ -206,6 +256,9 @@ export const useApp = create<AppStore>((set, get) => ({
   },
 
   ingestJobs: {},
+  ingestJobIds: {},
+  registerIngestJob: (project_id, job_id) =>
+    set((s) => ({ ingestJobIds: { ...s.ingestJobIds, [project_id]: job_id } })),
   startIngest: async (project_id, root_path) => {
     const job = await api.ingestProject(project_id, root_path);
     set((s) => ({
@@ -223,11 +276,13 @@ export const useApp = create<AppStore>((set, get) => ({
     }));
     return job.job_id;
   },
-  cancelIngest: (job_id) =>
+  cancelIngest: async (job_id) => {
+    await api.cancelOperation(job_id);
     set((s) => {
       const { [job_id]: _, ...rest } = s.ingestJobs;
       return { ingestJobs: rest };
-    }),
+    });
+  },
 
   bootstrapLoaded: false,
   bootstrapOnce: async () => {

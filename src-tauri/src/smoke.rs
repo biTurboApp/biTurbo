@@ -138,14 +138,8 @@ mod tests {
         state.indices.write().remove(project_id.as_str());
 
         let state2 = AppState::open(&data_dir).expect("reopen");
-        let hits = memory::search(
-            &state2,
-            project_id,
-            "orphaned sqlite memory",
-            5,
-            None,
-        )
-        .expect("search after repair");
+        let hits = memory::search(&state2, project_id, "orphaned sqlite memory", 5, None)
+            .expect("search after repair");
         assert!(
             hits.iter().any(|h| h.memory.uid == mem.uid),
             "repair_index_if_needed did not backfill missing vector"
@@ -190,6 +184,77 @@ mod tests {
             hits.iter().any(|h| h.memory.uid == uid),
             "memory not found after AppState reopen (MCP persistence regression)"
         );
+
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[test]
+    fn committed_index_mutation_is_replayed_after_interruption() {
+        let data_dir = temp_data_dir();
+        let state = AppState::open(&data_dir).expect("open state");
+        let project_id = state.default_project_id.clone();
+        let uid = format!("fault-{}", uuid::Uuid::new_v4());
+        let content = "automobile drivetrain calibration procedure";
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Simulate a process dying after the SQLite commit but before turbovec
+        // was updated: the durable journal and memory row commit together.
+        state
+            .db
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO memories(uid, project_id, mem_type, content, importance,
+                                          created_at, updated_at, last_access, access_count)
+                     VALUES(?1, ?2, 'fact', ?3, 0.5, ?4, ?4, ?4, 0)",
+                    rusqlite::params![uid, project_id, content, now],
+                )?;
+                crate::persistence::queue_index_upsert(tx, &project_id, &uid, content)?;
+                Ok(())
+            })
+            .expect("commit interrupted mutation");
+
+        let idx = state.get_or_load_index(&project_id).expect("index");
+        assert!(!idx.contains_uid(&uid));
+        state
+            .replay_index_mutations(&project_id)
+            .expect("replay mutation");
+        assert!(idx.contains_uid(&uid));
+        assert_eq!(
+            crate::persistence::pending_count(&state, &project_id).unwrap(),
+            0
+        );
+
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[test]
+    fn equal_sized_stale_index_is_rebuilt_from_sqlite() {
+        let data_dir = temp_data_dir();
+        let state = AppState::open(&data_dir).expect("open state");
+        let project_id = state.default_project_id.clone();
+        let mem = memory::remember(
+            &state,
+            RememberInput {
+                content: "canonical suspension geometry specification".into(),
+                ..Default::default()
+            },
+        )
+        .expect("remember");
+
+        let idx = state.get_or_load_index(&project_id).expect("index");
+        idx.remove(&mem.uid).expect("remove canonical vector");
+        let ghost = state
+            .embedder
+            .embed("unrelated ghost entry")
+            .expect("embed");
+        idx.add("ghost-uid", &ghost).expect("add ghost");
+        assert_eq!(idx.len(), 1, "fault must preserve index count");
+
+        state
+            .repair_index_if_needed(&project_id)
+            .expect("repair stale equal-sized index");
+        assert!(idx.contains_uid(&mem.uid));
+        assert!(!idx.contains_uid("ghost-uid"));
 
         std::fs::remove_dir_all(&data_dir).ok();
     }

@@ -17,11 +17,13 @@ use tauri::AppHandle;
 /// turbovec keeps the full quantized index in RAM, so this directly
 /// caps RSS. 512 MiB is enough for several large projects.
 const DEFAULT_INDEX_BUDGET: u64 = 512 * 1024 * 1024;
+type ProjectEmbedderCache = HashMap<String, (String, Arc<Embedder>)>;
 
 pub struct AppState {
     pub data_dir: PathBuf,
     pub db: Db,
     pub embedder: Arc<Embedder>,
+    project_embedders: Arc<RwLock<ProjectEmbedderCache>>,
     pub indices: Arc<RwLock<HashMap<String, Arc<ProjectIndex>>>>,
     pub default_project_id: String,
     pub app: Option<AppHandle>,
@@ -36,6 +38,7 @@ impl Clone for AppState {
             data_dir: self.data_dir.clone(),
             db: self.db.clone(),
             embedder: self.embedder.clone(),
+            project_embedders: self.project_embedders.clone(),
             indices: self.indices.clone(),
             default_project_id: self.default_project_id.clone(),
             app: self.app.clone(),
@@ -68,6 +71,7 @@ impl AppState {
             data_dir: data_dir.to_path_buf(),
             db,
             embedder,
+            project_embedders: Arc::new(RwLock::new(HashMap::new())),
             indices: Arc::new(RwLock::new(HashMap::new())),
             default_project_id: default_id,
             app: None,
@@ -78,6 +82,8 @@ impl AppState {
 
         // Ensure index files exist on disk, but do NOT load them into memory.
         state.refresh_indices()?;
+        state.replay_all_index_mutations()?;
+        crate::operations::recover_interrupted(&state)?;
 
         // Debounced index flusher + LRU evictor. A plain thread (not tokio)
         // so it runs in every consumer of AppState.
@@ -308,7 +314,7 @@ impl AppState {
 
     /// Embed text and add to a project's index. Returns the vector length.
     pub fn embed_and_add(&self, project_id: &str, uid: &str, text: &str) -> BiResult<usize> {
-        let vec = self.embedder.embed(text)?;
+        let vec = self.embedder_for_project(project_id)?.embed(text)?;
         let idx = self.get_or_load_index(project_id)?;
         idx.add(uid, &vec)?;
         Ok(vec.len())
@@ -330,14 +336,44 @@ impl AppState {
         allowlist: Option<&[String]>,
     ) -> BiResult<Vec<crate::index_engine::SearchHit>> {
         self.repair_index_if_needed(project_id)?;
-        let vec = self.embedder.embed(query)?;
+        let vec = self.embedder_for_project(project_id)?.embed(query)?;
         let idx = self.get_or_load_index(project_id)?;
         idx.search(&vec, k, allowlist)
     }
 
     /// Backfill the vector index when SQLite has more active memories than the on-disk index.
     pub fn repair_index_if_needed(&self, project_id: &str) -> BiResult<()> {
-        let db_rows: Vec<(String, String)> = {
+        self.replay_index_mutations(project_id)?;
+        let idx = self.get_or_load_index(project_id)?;
+
+        // The journal stores the expected uid-set digest after every applied
+        // mutation. This detects equal-sized stale indexes, unlike count alone.
+        let (active_count, expected_digest): (usize, Option<String>) = {
+            let conn = self.db.conn()?;
+            let count = conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE project_id = ?1 AND superseded_by IS NULL",
+                rusqlite::params![project_id],
+                |r| r.get::<_, i64>(0),
+            )? as usize;
+            let digest = conn
+                .query_row(
+                    "SELECT content_digest FROM index_state WHERE project_id = ?1",
+                    rusqlite::params![project_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None);
+            (count, digest)
+        };
+
+        if idx.len() == active_count
+            && expected_digest
+                .as_deref()
+                .is_some_and(|expected| expected == idx.uid_digest())
+        {
+            return Ok(());
+        }
+
+        let rows: Vec<(String, String)> = {
             let conn = self.db.conn()?;
             let mut stmt = conn.prepare(
                 "SELECT uid, content FROM memories WHERE project_id = ?1 AND superseded_by IS NULL",
@@ -347,35 +383,71 @@ impl AppState {
             })?;
             rows.filter_map(|r| r.ok()).collect()
         };
-        let idx = self.get_or_load_index(project_id)?;
-        if idx.len() >= db_rows.len() {
-            return Ok(());
-        }
-        let rows: Vec<(String, String)> = db_rows
-            .into_iter()
-            .filter(|(uid, _)| !idx.contains_uid(uid))
-            .collect();
-        if rows.is_empty() {
-            return Ok(());
-        }
         tracing::info!(
-            "repairing vector index for '{}': backfilling {} of {} memories",
+            "rebuilding stale vector index for '{}': {} active memories",
             project_id,
-            rows.len(),
-            idx.len() + rows.len()
+            rows.len()
         );
         const BATCH: usize = 32;
+        let mut items: Vec<(String, Vec<f32>)> = Vec::with_capacity(rows.len());
         for chunk in rows.chunks(BATCH) {
             let text_refs: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-            let vecs = self.embedder.embed_batch(&text_refs)?;
-            let items: Vec<(String, Vec<f32>)> = chunk
-                .iter()
-                .zip(vecs)
-                .map(|((uid, _), v)| (uid.clone(), v))
-                .collect();
-            idx.add_batch(&items)?;
+            let vecs = self
+                .embedder_for_project(project_id)?
+                .embed_batch(&text_refs)?;
+            items.extend(chunk.iter().zip(vecs).map(|((uid, _), v)| (uid.clone(), v)));
         }
+        idx.replace_all(&items)?;
         let _ = idx.flush();
+        let digest = idx.uid_digest();
+        let now = chrono::Utc::now().timestamp_millis();
+        self.db.write(|tx| {
+            tx.execute(
+                "INSERT INTO index_state(project_id, last_applied_mutation, content_digest, verified_at)
+                 VALUES(?1, COALESCE((SELECT MAX(id) FROM index_mutations WHERE project_id = ?1), 0), ?2, ?3)
+                 ON CONFLICT(project_id) DO UPDATE SET content_digest = excluded.content_digest,
+                    last_applied_mutation = excluded.last_applied_mutation,
+                    verified_at = excluded.verified_at",
+                rusqlite::params![project_id, digest, now],
+            )?;
+            Ok(())
+        })?;
         Ok(())
+    }
+
+    pub fn embedder_for_project(&self, project_id: &str) -> BiResult<Arc<Embedder>> {
+        let model = {
+            let conn = self.db.conn()?;
+            conn.query_row(
+                "SELECT COALESCE(embed_model, ?2) FROM projects WHERE id = ?1",
+                rusqlite::params![project_id, crate::embed::DEFAULT_MODEL],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(|_| BiError::NotFound(format!("project {project_id}")))?
+        };
+        if matches!(model.as_str(), "BGE-small-en" | "BGE-small-en-v1.5") {
+            return Ok(self.embedder.clone());
+        }
+        if let Some((cached_model, embedder)) = self.project_embedders.read().get(project_id) {
+            if cached_model == &model {
+                return Ok(embedder.clone());
+            }
+        }
+        let embedder = Arc::new(Embedder::new(&model)?);
+        self.project_embedders
+            .write()
+            .insert(project_id.to_string(), (model, embedder.clone()));
+        Ok(embedder)
+    }
+
+    pub fn invalidate_project_embedder(&self, project_id: &str) {
+        self.project_embedders.write().remove(project_id);
+    }
+
+    pub fn release_idle_embedders(&self) {
+        self.embedder.release_if_idle();
+        for (_, embedder) in self.project_embedders.read().values() {
+            embedder.release_if_idle();
+        }
     }
 }

@@ -14,7 +14,7 @@ const INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const STARTUP_DELAY: Duration = Duration::from_secs(60);
 const JOB_CHANNEL_CAPACITY: usize = 8;
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ConsolidateStatus {
     pub last_run_at: Option<i64>,
     pub next_run_in_secs: u64,
@@ -24,6 +24,7 @@ pub struct ConsolidateStatus {
     pub queued: bool,
 }
 
+#[derive(Default)]
 struct Shared {
     last_run_at: Option<i64>,
     last_report: Option<ConsolidateReport>,
@@ -31,18 +32,6 @@ struct Shared {
     last_finish: Option<Instant>,
     /// A manual job is queued waiting for the current run to finish.
     queued: bool,
-}
-
-impl Default for Shared {
-    fn default() -> Self {
-        Self {
-            last_run_at: None,
-            last_report: None,
-            running: false,
-            last_finish: None,
-            queued: false,
-        }
-    }
 }
 
 static STATE: once_cell::sync::Lazy<Arc<Mutex<Shared>>> =
@@ -74,7 +63,7 @@ pub fn spawn(state: Arc<AppState>) {
         interval.tick().await;
         loop {
             interval.tick().await;
-            state_for_release.embedder.release_if_idle();
+            state_for_release.release_idle_embedders();
         }
     });
 

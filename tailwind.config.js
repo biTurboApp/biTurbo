@@ -39,10 +39,25 @@ export default {
           from: { opacity: "0", transform: "translateY(4px)" },
           to: { opacity: "1", transform: "translateY(0)" },
         },
+        backdrop_in: {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
+        modal_in: {
+          from: { opacity: "0", transform: "scale(0.95) translateY(10px)" },
+          to: { opacity: "1", transform: "scale(1) translateY(0)" },
+        },
+        context_in: {
+          from: { opacity: "0", transform: "scale(0.95)" },
+          to: { opacity: "1", transform: "scale(1)" },
+        },
       },
       animation: {
         pulse_dot: "pulse_dot 2s ease-in-out infinite",
         fade_in: "fade_in 200ms ease-out",
+        backdrop_in: "backdrop_in 150ms ease-out",
+        modal_in: "modal_in 200ms ease-out",
+        context_in: "context_in 120ms ease-out",
       },
     },
   },

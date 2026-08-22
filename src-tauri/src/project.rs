@@ -6,6 +6,7 @@ use crate::error::{BiError, BiResult};
 use crate::state::AppState;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -91,8 +92,7 @@ pub fn create(state: &AppState, input: CreateProjectInput) -> BiResult<Project> 
         let biturbo_file = std::path::PathBuf::from(root_path).join(".biTurbo");
         // Only write if file doesn't exist (skip/continue if it exists)
         if !biturbo_file.exists() {
-            let content = format!("projectName={}", input.name);
-            let _ = std::fs::write(&biturbo_file, content);
+            let _ = std::fs::write(&biturbo_file, biturbo_file_content(&id, &input.name, now));
         }
     }
 
@@ -100,20 +100,93 @@ pub fn create(state: &AppState, input: CreateProjectInput) -> BiResult<Project> 
     get(state, &id)
 }
 
+/// Contents written to a project root's `.biTurbo` marker file.
+/// Simple `key=value` lines; the MCP server only reads the `projectName=`
+/// line, so extra fields are safe to add without breaking existing parsers.
+fn biturbo_file_content(id: &str, name: &str, created_at: i64) -> String {
+    format!("projectId={id}\nprojectName={name}\ncreatedAt={created_at}\nbiturboVersion=1\n")
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EnsureMarkerFilesResult {
+    pub project_id: String,
+    pub created: Vec<String>,
+}
+
+/// Regenerate `.biTurbo` and/or `.biturboignore` for a project whose root_path
+/// predates these marker files (legacy projects). Idempotent — files that
+/// already exist are left untouched.
+pub fn ensure_marker_files(
+    state: &AppState,
+    project_id: &str,
+) -> BiResult<EnsureMarkerFilesResult> {
+    let p = get(state, project_id)?;
+    let root_path = p
+        .root_path
+        .clone()
+        .ok_or_else(|| BiError::Invalid(format!("project '{project_id}' has no root_path set")))?;
+    let root = std::path::PathBuf::from(&root_path);
+    if !root.is_dir() {
+        return Err(BiError::Invalid(format!(
+            "root_path '{root_path}' does not exist on disk"
+        )));
+    }
+
+    let mut created = Vec::new();
+
+    let biturbo_file = root.join(".biTurbo");
+    if !biturbo_file.exists() {
+        let now = chrono::Utc::now().timestamp_millis();
+        std::fs::write(&biturbo_file, biturbo_file_content(&p.id, &p.name, now))
+            .map_err(|e| BiError::Invalid(format!("failed to write .biTurbo: {e}")))?;
+        created.push(".biTurbo".to_string());
+    }
+
+    if crate::ingest::ensure_biturboignore(&root)? {
+        created.push(".biturboignore".to_string());
+    }
+
+    Ok(EnsureMarkerFilesResult {
+        project_id: p.id,
+        created,
+    })
+}
+
 pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
     if id == state.default_project_id {
         return Err(BiError::Invalid("cannot delete default project".into()));
     }
     // Defense in depth: a legacy row with a traversal-shaped id must never
-    // reach the filesystem path joins below.
+    // reach the filesystem path joins below (both the mutation lock file and
+    // the index files are named after the raw id).
     validate_project_id(id)?;
-
-    // Drop index file.
+    get(state, id)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(
+            state
+                .data_dir
+                .join("indices")
+                .join(format!("{id}.mutation.lock")),
+        )?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    state.flush_all_indices();
+    state.indices.write().remove(id);
+    // Remove derived state first. If the process stops here, SQLite still
+    // contains the project and startup repair deterministically rebuilds it.
     let file = state.data_dir.join("indices").join(format!("{id}.tvim"));
-    let _ = std::fs::remove_file(&file);
     let meta = file.with_extension("uidmap.json");
-    let _ = std::fs::remove_file(&meta);
-    state.db.write(|tx| {
+    for path in [&file, &meta] {
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|error| {
+                BiError::Io(format!("remove project index {}: {error}", path.display()))
+            })?;
+        }
+    }
+    let deleted = state.db.write(|tx| {
         tx.execute(
             "DELETE FROM memories WHERE project_id = ?1",
             rusqlite::params![id],
@@ -121,9 +194,12 @@ pub fn delete(state: &AppState, id: &str) -> BiResult<()> {
         tx.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         log_activity(tx, Some(id), None, "delete_project", None, None)?;
         Ok(())
-    })?;
-    state.indices.write().remove(id);
-    Ok(())
+    });
+    fs2::FileExt::unlock(&lock)?;
+    if deleted.is_err() {
+        let _ = state.repair_index_if_needed(id);
+    }
+    deleted
 }
 
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
